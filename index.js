@@ -1198,6 +1198,9 @@ const Misc = {
                 // Preserve items with 4+ mods or high mod values
                 if (modCount >= 4) return;
 
+                // comment to remove items, be careful
+                return;
+
                 // Mark the item for removal
                 itemsToRemove.push(index);
             }
@@ -1213,6 +1216,9 @@ const Misc = {
                     console.log(`Preserving socketed rune: ${metaData.name} [${item.qual}] +${socketsCount}`);
                     return;
                 }
+                
+                // comment to remove items, be careful
+                return;
 
                 // Remove runes that should be avoided
                 if (shouldAvoid) {
@@ -1232,12 +1238,15 @@ const Misc = {
                     return
                 }
 
+                // comment to remove items, be careful
+                return;
+
                 // Mark the passive for removal
                 itemsToRemove.push(index);
             }
 
             // Handle combineable resources
-            else if (["wood", "flax", "rock", "portalScroll", "essence"].includes(item.md) || metaData.isMat) {
+            else if (["wood", "flax", "rock", "portalScroll"].includes(item.md) || metaData.isMat) {
                 itemsToCombine.push(index);
             }
         });
@@ -1245,7 +1254,7 @@ const Misc = {
         // Remove marked items
         if (itemsToRemove.length > 0) {
             console.log("Removing items:", itemsToRemove);
-            itemsToRemove.forEach(inventoryIndex => dw.deleteItem(inventoryIndex));
+            // itemsToRemove.forEach(inventoryIndex => dw.deleteItem(inventoryIndex));
         }
 
         // Combine resources
