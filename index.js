@@ -37,23 +37,24 @@ const SKILLS = {
     shield: {
         enable: true,
         index: 2,
-        range: 0.5
+        range: 0.5,
+        withBomb: true
     },
     heal: {
-        enable: true,
+        enable: false,
         index: 1,
         range: 0.5,
         hpThreshold: 0.6,
         withMasochism: false
     },
    dash: {
-        enable: true,
+        enable: false,
         index: 3,
         range: 2.6,
         minRange: 1.75
     },
     teleport: {
-        enable: true,
+        enable: false,
         index: 4,
         range: 5,
         minRange: 3,
@@ -76,7 +77,7 @@ const SKILLS = {
         hpThreshold: 0.4,
     },
     taunt: {
-        enable: true,
+        enable: false,
         index: 5,
         range: 0.88
     },
@@ -91,7 +92,7 @@ const SKILLS = {
  * Configuration flags for various behaviors
  */
 const configFlags = {
-    attackNextScoreMonster: true,
+    attackNextScoreMonster: false,
     moveToMission: false,
     enableRandomMovement: false,
     prioritizeResource: true,
@@ -102,8 +103,8 @@ const configFlags = {
     moveToShrub: false
 };
 
-const protectList = ["Vestrel"];
-const healList = ["Vestrel"];
+const protectList = [];
+const healList = [];
 
 /**
  * Represents a node in the pathfinding algorithm.
@@ -549,6 +550,14 @@ const Character = {
     },
 
     /**
+     * Checks if the character has the 'bomb' condition active.
+     * @returns {boolean} True if the character has the bomb condition, otherwise false.
+     */
+    hasBomb() {
+        return 'bomb' in dw.character.conditions;
+    },
+
+    /**
      * Checks if the character has the 'lifeshield' condition active.
      * @returns {boolean} True if the character has the lifeshield condition, otherwise false.
      */
@@ -576,7 +585,7 @@ const Character = {
      * Checks if the character has the 'masochism' effect active.
      * @returns {boolean} True if the character has the masochism effect, otherwise false.
      */
-    hasMasoquism() {
+    hasMasochism() {
         return 'masochism' in dw.character.fx;
     },
 
@@ -624,7 +633,7 @@ const Finder = {
                     dw.mdInfo[entity.md]?.isMonster || 
                     dw.mdInfo[entity.md]?.isResource
                 ) && 
-                !dw.mdInfo[entity.md]?.isSafe
+                !entity.isSafe
         );
     },
 
@@ -782,13 +791,17 @@ const Action = {
         if (
             !Character.isCasting() &&
             !Character.isBeingAttacked() &&
-            SKILLS.shield.enable &&
-            !Character.hasLifeshield() &&
-            !Character.hasShieldRecovery()
+            SKILLS.shield.enable
         ) {
-            if (dw.canUseSkill(SKILLS.shield.index, dw.character.id)) {
-                DEBUG.log(`Using <span style="color: hotpink">Lifeshield</span>`);
-                dw.useSkill(SKILLS.shield.index, dw.character.id);
+            const shouldUse = SKILLS.shield.withBomb 
+                ? !Character.hasBomb()
+                : !Character.hasLifeshield() && !Character.hasShieldRecovery()
+
+            if(shouldUse) {
+                if (dw.canUseSkill(SKILLS.shield.index, dw.character.id)) {
+                    DEBUG.log(`Using <span style="color: hotpink">Lifeshield</span>`);
+                    dw.useSkill(SKILLS.shield.index, dw.c.id);
+                }
             }
         }
     },
@@ -921,7 +934,7 @@ const Movement = {
      * Check the zone level and trigger suicide if necessary.
      */
     checkZoneLevel() {
-        if (dw.getZoneLevel(dw.character.x, dw.character.y, dw.character.z) <= 38) dw.suicide();
+        // if (dw.getZoneLevel(dw.character.x, dw.character.y, dw.character.z) <= 38) dw.suicide();
     },
 
     /**
@@ -937,7 +950,7 @@ const Movement = {
     checkCharacterIdle() {
         const currentTime = Date.now();
         if (dw.distance(dw.character.x, dw.character.y, lastPosition.x, lastPosition.y) <= 0.5 && currentTime - lastMoveTime >= 60000) {
-            DEBUG.log("Character idle for 1 minute, committing suicide.");
+            DEBUG.log("Character idle for 3 minute, committing suicide.");
             dw.suicide();
             lastMoveTime = currentTime;
         } else {
@@ -1253,6 +1266,7 @@ const Misc = {
         // Remove marked items
         if (itemsToRemove.length > 0) {
             console.log("Removing items:", itemsToRemove);
+            // itemsToRemove.forEach(inventoryIndex => dw.deleteItem(inventoryIndex));
         }
 
         // Combine resources
@@ -1280,8 +1294,6 @@ const eventPriority = [
     Movement.moveMission,
     Movement.followAllied,
     Movement.followAndHealAllied,
-    Movement.checkZoneLevel,
-    Movement.checkTerrain,
     Movement.checkCharacterIdle
 ];
 
