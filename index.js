@@ -92,7 +92,7 @@ const SKILLS = {
  * Configuration flags for various behaviors
  */
 const configFlags = {
-    attackNextScoreMonster: false,
+    attackNextScoreMonster: true,
     moveToMission: false,
     enableRandomMovement: false,
     prioritizeResource: true,
