@@ -21,8 +21,8 @@ const SETTINGS = {
     visionConeAngle: Math.PI * 1.10, 
     visionConeRadius: 3.2, 
     predictionTime: 1, 
-    pathStepSize: 1,
-    maxPathfindingIterations: 500,
+    pathStepSize: 0.75,
+    maxPathfindingIterations: 700,
     interpolationSteps: 100,
     gooProximityRange: 2,
     monsterProximityRange: 1.5,
@@ -35,7 +35,7 @@ const SKILLS = {
         range: 0.7
     },
     shield: {
-        enable: false,
+        enable: true,
         index: 2,
         range: 0.5
     },
@@ -43,7 +43,8 @@ const SKILLS = {
         enable: true,
         index: 1,
         range: 0.5,
-        hpThreshold: 0.6
+        hpThreshold: 0.6,
+        withMasochism: false
     },
    dash: {
         enable: true,
@@ -75,8 +76,8 @@ const SKILLS = {
         hpThreshold: 0.4,
     },
     taunt: {
-        enable: false,
-        index: 9,
+        enable: true,
+        index: 5,
         range: 0.88
     },
     aoe: {
@@ -101,8 +102,8 @@ const configFlags = {
     moveToShrub: false
 };
 
-const protectList = [];
-const healList = [];
+const protectList = ["Vestrel"];
+const healList = ["Vestrel"];
 
 /**
  * Represents a node in the pathfinding algorithm.
@@ -572,6 +573,14 @@ const Character = {
     },
 
     /**
+     * Checks if the character has the 'masochism' effect active.
+     * @returns {boolean} True if the character has the masochism effect, otherwise false.
+     */
+    hasMasoquism() {
+        return 'masochism' in dw.character.fx;
+    },
+
+    /**
      * Checks if the character has the 'graft' effect active.
      * @returns {boolean} True if the character has the graft effect, otherwise false.
      */
@@ -804,6 +813,7 @@ const Action = {
      */
     useHealSkill() {
         if (
+            (!Character.hasMasochism() && SKILLS.heal.withMasochism) &&
             !Character.isCasting() &&
             !Character.isBeingAttacked() &&
             SKILLS.heal.enable &&
@@ -1080,14 +1090,12 @@ const Movement = {
         if (target) {
             const distToTarget = Util.distanceToTarget(target);
             DEBUG.log(`Attempting to heal ${target.name}. Current distance: ${distToTarget}`);
-            if (distToTarget > 3) dw.move(target.x, target.y);
-
-            if (dw.canUseSkill(SKILLS.heal.index, target.id)) {
-                if (target.hp <= target.maxHp * 0.9) {
-                    dw.useSkill(SKILLS.heal.index, target.id);
-                    DEBUG.log(`Healing ${target.name}`);
+            if (target.hp <= target.maxHp * 0.9) {
+                if (dw.canUseSkill(SKILLS.heal.index, target.id)) {
+                        dw.useSkill(SKILLS.heal.index, target.id);
+                        DEBUG.log(`Healing ${target.name}`);
                 } else {
-                    DEBUG.log(`${target.name} is healthy, no healing needed.`);
+                        DEBUG.log(`${target.name} is healthy, no healing needed.`);
                 }
             }
         }
@@ -1198,9 +1206,6 @@ const Misc = {
                 // Preserve items with 4+ mods or high mod values
                 if (modCount >= 4) return;
 
-                // comment to remove items, be careful
-                return;
-
                 // Mark the item for removal
                 itemsToRemove.push(index);
             }
@@ -1216,9 +1221,6 @@ const Misc = {
                     console.log(`Preserving socketed rune: ${metaData.name} [${item.qual}] +${socketsCount}`);
                     return;
                 }
-                
-                // comment to remove items, be careful
-                return;
 
                 // Remove runes that should be avoided
                 if (shouldAvoid) {
@@ -1238,9 +1240,6 @@ const Misc = {
                     return
                 }
 
-                // comment to remove items, be careful
-                return;
-
                 // Mark the passive for removal
                 itemsToRemove.push(index);
             }
@@ -1254,7 +1253,7 @@ const Misc = {
         // Remove marked items
         if (itemsToRemove.length > 0) {
             console.log("Removing items:", itemsToRemove);
-            // itemsToRemove.forEach(inventoryIndex => dw.deleteItem(inventoryIndex));
+            itemsToRemove.forEach(inventoryIndex => dw.deleteItem(inventoryIndex));
         }
 
         // Combine resources
@@ -1295,16 +1294,14 @@ function handleGameEvents() {
         const target = eventFunction();
         if (!target) continue;
 
-        console.log(target)
-
         const attackers = Finder.getEntities().filter(e => e.targetId === dw.character.id && dw.mdInfo[e.md]?.isMonster);
 
         // Wait if cooldowns are still active or HP is below max
-        // if (target.toAttack && attackers.length === 0 && (dw.character.gcd >= Date.now() || dw.character.hp < dw.character.maxHp)) {
-        //     DEBUG.log("Waiting...");
-        //     dw.stop();
-        //     return;
-        // }
+        if (target.toAttack && attackers.length === 0 && (dw.character.gcd >= Date.now() || dw.character.hp / dw.character.maxHp < 0.5)) {
+            DEBUG.log("Waiting...");
+            dw.stop();
+            return;
+        }
 
         // Handle skill-based actions
         if (target.toSkill >= 0) {
@@ -1321,6 +1318,9 @@ function handleGameEvents() {
         }
         return; // Stop processing further events after acting on the current one
     }
+
+    // TO-DO implement pathfind seeking for a higher-level zone
+
     DEBUG.log("No relevant actions. Character standing by.");
 }
 
