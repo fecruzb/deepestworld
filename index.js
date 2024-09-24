@@ -1253,7 +1253,6 @@ const Misc = {
         // Remove marked items
         if (itemsToRemove.length > 0) {
             console.log("Removing items:", itemsToRemove);
-            itemsToRemove.forEach(inventoryIndex => dw.deleteItem(inventoryIndex));
         }
 
         // Combine resources
