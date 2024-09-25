@@ -3,7 +3,7 @@ dw.debug = true;
 let lastPosition = { x: dw.character.x, y: dw.character.y };
 let lastMoveTime = Date.now();
 let bestPathArray = []
-
+const visitedPositions = [];
 /**
  * Configuration constants used throughout the code.
  * @constant
@@ -26,13 +26,43 @@ const SETTINGS = {
     interpolationSteps: 100,
     gooProximityRange: 2,
     monsterProximityRange: 1.5,
+    zoneLevelSuicide: 0,
+    rareMonsterLimit: 5,
+    scoreLimit: -10,
+    idleTime: 15,
+};
+
+/**
+ * Configuration flags for various behaviors
+ */
+const CONFIG = {
+    exploreNewAreas: true,
+    removeItems: true,
+    combineItems: true,
+    sortItems: true,
+    suicideAtZoneLevel: true,
+    suicideUnderground: true,
+    attackNextScoreMonster: true,
+    moveToMission: false,
+    enableRandomMovement: false,
+    prioritizeResource: true,
+    prioritizeMission: false,
+    followAlliedCharacter: false,
+    healAndFollowAllied: false,
+    enableTeleport: true,
+    moveToShrub: false
 };
 
 const SKILLS = {
     attack: {
         enable: true,
         index: 0,
-        range: 0.7
+        range: 0.7,
+    },
+    attack_exertion: {
+        enable: true,
+        index: 5,
+        range: 0.7,
     },
     shield: {
         enable: true,
@@ -41,20 +71,20 @@ const SKILLS = {
         withBomb: true
     },
     heal: {
-        enable: false,
+        enable: true,
         index: 1,
         range: 0.5,
         hpThreshold: 0.6,
-        withMasochism: false
+        withMasochism: true
     },
    dash: {
-        enable: false,
+        enable: true,
         index: 3,
         range: 2.6,
         minRange: 1.75
     },
     teleport: {
-        enable: false,
+        enable: true,
         index: 4,
         range: 5,
         minRange: 3,
@@ -88,19 +118,110 @@ const SKILLS = {
     },
 }
 
-/**
- * Configuration flags for various behaviors
- */
-const configFlags = {
-    attackNextScoreMonster: true,
-    moveToMission: false,
-    enableRandomMovement: false,
-    prioritizeResource: true,
-    prioritizeMission: false,
-    followAlliedCharacter: false,
-    healAndFollowAllied: false,
-    enableTeleport: true,
-    moveToShrub: false
+const ITEMS = {
+    global: {
+        min_any_mod_quantity: 5, // Any mod with quality 8 or above should be kept
+        min_any_mod_quality: 8, // Any mod with quality 8 or above should be kept
+        mods_to_keep: ["masochism"], // List of mods that will keep the item regardless of other conditions
+        tags_to_keep: [],
+        mds_to_keep: []
+    },
+    weapon: {
+        mods: ["physDmgIncLocal", "physDmgInc", "physDmgLocal", "physDmg", "dmg", "hpLeech", "hpGain", "gcdr", "gcdrLocal"], // Mods to look for
+        conditions: {
+            operator: "OR", // Operator for combining conditions
+            conditions: [
+                { 
+                    condition: "min_quantity", // Check for minimum number of mods
+                    value: 3 // Minimum mods from the list required
+                },
+                { 
+                    condition: "min_quality", // Check for minimum mod quality
+                    value: 5 // At least one mod from the list should be >= 5 quality
+                },
+                { 
+                    condition: "min_sum_quality", // Check for minimum sum of mod qualities
+                    value: 10 // Combined quality of mods from the list should be >= 8
+                }
+            ]
+        }
+    },
+    accessory: {
+        mods: ["physDmgIncLocal", "physDmgInc", "physDmgLocal", "physDmg", "dmg", "hpRegen", "hp"], // Mods to look for
+        conditions: {
+            operator: "OR", // Operator for combining conditions
+            conditions: [
+                { 
+                    condition: "min_quantity", 
+                    value: 3
+                },
+                { 
+                    condition: "min_quality", 
+                    value: 5 
+                },
+                { 
+                    condition: "min_sum_quality", 
+                    value: 10 
+                }
+            ]
+        }
+    },
+    armor: {
+        mods: ["hpInc", "hpRegen", "hp", "defLocal", "defIncLocal", "physRes"], // Mods to look for
+        conditions: {
+            operator: "OR", // Operator for combining conditions
+            conditions: [
+                { 
+                    condition: "min_quantity", 
+                    value: 3
+                },
+                { 
+                    condition: "min_quality", 
+                    value: 5 
+                },
+                { 
+                    condition: "min_sum_quality", 
+                    value: 10
+                }
+            ]
+        }
+    },
+    rune: {
+         conditions: {
+            operator: "AND", // Operator for combining conditions
+            conditions: [
+                { 
+                    condition: "min_socket", // Check for minimum number of mods
+                    value: 4 // Minimum mods from the list required
+                }
+            ]
+        }
+    },
+    passive: {
+        mods: ["hpInc", "hpRegenInc", "gcdr", "physDmgInc"], // Mods to look for
+        conditions: {
+            operator: "OR",
+            conditions: [
+                { 
+                    condition: "min_quantity", 
+                    value: 2 // At least 2 mods from the list
+                },
+                { 
+                    condition: "min_quality", 
+                    value: 4 // At least one mod from the list has to be equal or greater than 4
+                },
+                { 
+                    condition: "min_sum_quality", 
+                    value: 6 // Combined quality of mods from the list should be >= 6
+                },
+                { 
+                    condition: "min_sum_quality_total", 
+                    value: 8 // Combined quality of mods from the list should be >= 8
+                }
+            ]
+        }
+    },
+    combine: ["wood", "flax", "rock", "portalScroll"],  // Combineable resource items
 };
 
 const protectList = [];
@@ -126,6 +247,7 @@ class Node {
         this.parent = parent; // Previous node in the path
     }
 }
+
 
 const DEBUG = {
     lastMessage: null,
@@ -715,23 +837,32 @@ const Finder = {
             if(dw.mdInfo[monster.md].isMonster) {
                 score += 15
                 if (monster.hp < monster.maxHp) score += 10;
-                if (monster.bad && Util.isTrajectoryInMonsterCone(monster, dw.c)) score -= 2;
+                // if (monster.bad && Util.isTrajectoryInMonsterCone(monster, dw.c)) score -= 2;
                 score -= Util.checkGooProximity(monster) * 5;
                 score -= Util.checkMonsterNearby(monster) * 20;
                 if ([dw.character.id, ...Finder.getFollowCharacters()].includes(monster.targetId)) score += 100;
-                score -= Util.distanceToTarget(monster) * 1.5;
-                score -= Util.countMonstersAlongPath(monster) * 30;
+                score -= Util.distanceToTarget(monster);
+                // score -= Util.countMonstersAlongPath(monster) * 30;
 
                 if (monster.r > 0) {
-                    score += (monster.r > 2) ? -(monster.r * 20) : monster.r * 20;
+                    score += (monster.r > SETTINGS.rareMonsterLimit || monster.maxHp > 13000) ? -(monster.r * 30) : monster.r * 30;
                 }
 
                 if(dw.mdInfo[monster.md].canHunt) {
                     score -= 10;
                 }
+
+                const levelDifference = Math.abs(monster.lvl - dw.c.lvl);
+
+                // Give highest score to monsters with same level as character
+                if (levelDifference === 0) {
+                    score += 20;
+                } else {
+                    score -= Math.abs(levelDifference) * 3
+                }
             }
             if(dw.mdInfo[monster.md].isResource) { 
-                score += 15
+                score += -30
                 score -= Util.distanceToTarget(monster);
                 score -= Util.checkMonsterNearby(monster) * 20;
                 score -= Util.countMonstersAlongPath(monster) * 20;
@@ -745,7 +876,7 @@ const Finder = {
      * @returns {Object|null} The next monster to attack, or null if none found.
      */
     getNextMonster() {
-        if (!configFlags.attackNextScoreMonster) return null;
+        if (!CONFIG.attackNextScoreMonster) return null;
         const monsters = Finder.getMonstersByScore() || [];
         
 
@@ -891,6 +1022,10 @@ const Action = {
                 attackSkill = SKILLS.conservation.index;
             }
 
+            if(SKILLS.attack_exertion.enable && target.r > 0) {
+                attackSkill = SKILLS.attack_exertion.index
+            }
+
             // Use AOE skill if multiple enemies are in range
             if (
                 SKILLS.aoe.enable &&
@@ -934,14 +1069,19 @@ const Movement = {
      * Check the zone level and trigger suicide if necessary.
      */
     checkZoneLevel() {
-        // if (dw.getZoneLevel(dw.character.x, dw.character.y, dw.character.z) <= 38) dw.suicide();
+        if(
+            CONFIG.suicideAtZoneLevel &&
+            dw.getZoneLevel(dw.character.x, dw.character.y, dw.character.z) <= SETTINGS.zoneLevelSuicide
+        ) 
+            dw.suicide();
     },
 
     /**
      * Check if the character is on the correct terrain, trigger suicide if not.
      */
     checkTerrain() {
-        if (dw.character.z !== 0) dw.suicide();
+        if(CONFIG.suicideUnderground && dw.character.z !== 0)
+            dw.suicide();
     },
 
     /**
@@ -949,7 +1089,7 @@ const Movement = {
      */
     checkCharacterIdle() {
         const currentTime = Date.now();
-        if (dw.distance(dw.character.x, dw.character.y, lastPosition.x, lastPosition.y) <= 0.5 && currentTime - lastMoveTime >= 60000) {
+        if (dw.distance(dw.character.x, dw.character.y, lastPosition.x, lastPosition.y) <= 0.5 && currentTime - lastMoveTime >= 1000 * SETTINGS.idleTime) {
             DEBUG.log("Character idle for 3 minute, committing suicide.");
             dw.suicide();
             lastMoveTime = currentTime;
@@ -1036,7 +1176,7 @@ const Movement = {
      * Moves the character randomly in one of four directions.
      */
     randomMove() {
-        if (!configFlags.enableRandomMovement) return;
+        if (!CONFIG.enableRandomMovement) return;
 
         const direction = Math.floor(Math.random() * 4);
         let newX = dw.character.x;
@@ -1057,7 +1197,7 @@ const Movement = {
      * Moves the character to a mission target.
      */
     moveMission() {
-        if (configFlags.moveToMission && dw.character.mission) {
+        if (CONFIG.moveToMission && dw.character.mission) {
             DEBUG.log("Moving to mission target.");
             dw.move(dw.character.mission.x, dw.character.mission.y);
         }
@@ -1067,7 +1207,7 @@ const Movement = {
      * Moves the character toward a shrub and enters if close enough.
      */
     moveShrub() {
-        if (!configFlags.moveToShrub) return;
+        if (!CONFIG.moveToShrub) return;
 
         const shrubPos = { x: 31, y: 3 };
         if (Util.distanceToTarget(shrubPos) <= 30) {
@@ -1084,7 +1224,7 @@ const Movement = {
      * Follows a protected allied character.
      */
     followAllied() {
-        if (!configFlags.followAlliedCharacter) return;
+        if (!CONFIG.followAlliedCharacter) return;
 
         const target = Finder.getProtectTarget();
         if (target) {
@@ -1097,7 +1237,7 @@ const Movement = {
      * Follows and heals an allied character if needed.
      */
     followAndHealAllied() {
-        if (!configFlags.healAndFollowAllied) return;
+        if (!CONFIG.healAndFollowAllied) return;
 
         const target = Finder.getHealTarget();
         if (target) {
@@ -1149,141 +1289,432 @@ const Movement = {
         if (monsterFinder.length > 0) {
             bestPathArray = Movement.findPath(monsterFinder[0].monster); // Generate the safest path to the monster
         }
+    },
+
+    visitedPositions: [],
+
+    /**
+     * Adds or updates a position in the visited set with a score.
+     * If the position is new, it will be added with an initial score of 1.
+     * If the position exists, its score will be incremented.
+     * @param {number} x - X-coordinate.
+     * @param {number} y - Y-coordinate.
+     */
+    markPositionAsVisited(x, y) {
+        const existingPos = Movement.visitedPositions.find(pos => Math.hypot(pos.x - x, pos.y - y) <= 0.5);
+        if (existingPos) {
+            existingPos.score++; // Increment the score if the position is revisited
+        } else {
+            Movement.visitedPositions.push({ x, y, score: 1 }); // Add a new position with score 1
+        }
+    },
+
+    /**
+     * Checks if a position has been visited and retrieves the visitation score.
+     * If the position exists, return its score; otherwise, return 0 for unvisited.
+     * @param {number} x - X-coordinate.
+     * @param {number} y - Y-coordinate.
+     * @returns {number} The visitation score (0 if unvisited).
+     */
+    getPositionVisitScore(x, y) {
+        const pos = Movement.visitedPositions.find(pos => Math.hypot(pos.x - x, pos.y - y) <= 0.5);
+        return pos ? pos.score : 0; // Return score if visited, otherwise 0
+    },
+
+    /**
+     * Removes points from visitedPositions that are more than 30 units away from the current position.
+     */
+    cleanupDistantVisitedPoints() {
+        const currentPos = { x: dw.character.x, y: dw.character.y };
+        Movement.visitedPositions = Movement.visitedPositions.filter(pos => {
+            const distance = Math.hypot(pos.x - currentPos.x, pos.y - currentPos.y);
+            return distance <= 30; // Keep points that are within 30 units
+        });
+        DEBUG.log("Cleaned up distant points. Remaining visited points: " + Movement.visitedPositions.length);
+    },
+
+    /**
+     * Explore new areas by moving to positions with the lowest visitation score within a 5-unit radius.
+     * Avoids recently visited areas and ensures proper movement away from high-visited areas.
+     * @returns {Object|null} The next direction to move, or null if no valid movement is found.
+     */
+    exploreNewAreas() {
+        if(!config.exploreNewAreas) {
+            return
+        }
+        
+        const currentPos = { x: dw.character.x, y: dw.character.y };
+
+        // Cleanup distant points before exploring new areas
+        Movement.cleanupDistantVisitedPoints();
+
+        // Mark current position as visited
+        Movement.markPositionAsVisited(currentPos.x, currentPos.y);
+        DEBUG.log(`Marked position as visited: [${currentPos.x}, ${currentPos.y}]`);
+
+        const maxDistance = 10; // Maximum distance to move (increase to avoid small steps)
+        const directions = [
+            { x: maxDistance, y: 0 }, { x: -maxDistance, y: 0 }, // Left and Right
+            { x: 0, y: maxDistance }, { x: 0, y: -maxDistance }, // Up and Down
+            { x: maxDistance, y: maxDistance }, { x: -maxDistance, y: maxDistance }, // Diagonals
+            { x: maxDistance, y: -maxDistance }, { x: -maxDistance, y: -maxDistance } // Diagonals
+        ];
+
+        // Sort directions based on visitation score and distance from dense clusters
+        directions.sort((a, b) => {
+            const scoreA = Movement.getPositionVisitScore(currentPos.x + a.x, currentPos.y + a.y);
+            const scoreB = Movement.getPositionVisitScore(currentPos.x + b.x, currentPos.y + b.y);
+            const distA = Math.hypot(currentPos.x + a.x, currentPos.y + a.y);
+            const distB = Math.hypot(currentPos.x + b.x, currentPos.y + b.y);
+
+            // Prioritize areas with lower scores (less visited) and further distances
+            if (scoreA !== scoreB) {
+                return scoreA - scoreB; // Prioritize areas with fewer visits
+            }
+            return distB - distA; // Prioritize areas further from the current position
+        });
+
+        // Try each direction, moving to less visited positions
+        for (const dir of directions) {
+            const newPos = { x: currentPos.x + dir.x, y: currentPos.y + dir.y };
+
+            // Ensure the new position is safe and avoid high-visitation bubbles
+            if (Util.isSafe(newPos) && !Util.isPathBlocked(newPos)) {
+                DEBUG.log(`Exploring new area at [${newPos.x}, ${newPos.y}]`);
+                const path = Movement.findPath(newPos);
+
+                if (path?.path?.length > 1) {
+                    dw.move(path.path[1].x, path.path[1].y);
+                }
+                return path;
+            }
+        }
+
+        // If no valid movement is found, fallback to wall-following
+        DEBUG.log("No valid paths found. Attempting to follow wall.");
+        Movement.followWall(currentPos);
+
+        return null; // No valid movement found
+    },
+
+    /**
+     * Wall-following logic to handle cases where the character is stuck or blocked.
+     * Attempts to "hug" the wall by moving along its edge until a valid path is found.
+     * @param {Object} currentPos - The character's current position.
+     */
+    followWall(currentPos) {
+        const wallDirections = [
+            { x: 1, y: 0 }, { x: -1, y: 0 }, // Left and Right
+            { x: 0, y: 1 }, { x: 0, y: -1 }, // Up and Down
+            { x: 1, y: 1 }, { x: -1, y: 1 }, // Diagonals
+            { x: 1, y: -1 }, { x: -1, y: -1 } // Diagonals
+        ];
+
+        // Try each wall-following direction
+        for (const dir of wallDirections) {
+            const newPos = { x: currentPos.x + dir.x, y: currentPos.y + dir.y };
+
+            // Move along the wall edge if possible
+            if (Util.isSafe(newPos) && !Util.isPathBlocked(newPos)) {
+                DEBUG.log(`Following wall at [${newPos.x}, ${newPos.y}]`);
+                dw.move(newPos.x, newPos.y);
+                return;
+            }
+        }
+
+        // If all wall-following attempts fail, stay in place
+        DEBUG.log("All wall-following attempts failed. Staying in place.");
     }
 };
 
 const Misc = {
-    /**
-     * Cleans the inventory by removing unwanted items, combining resources, and sorting the inventory.
-     */
-    cleanInventory() {
-        const itemsToCombine = [];
-        const itemsToRemove = [];
 
-        // Loop through each item in the inventory
-        dw.character.inventory.forEach((item, index) => {
-            if (!item) return;
+    // Count how many mods from a list are present in the item's modKeys
+    countModsFromList(item, modList) {
+        const modKeys = Object.keys(item.mods || {});
+        return modList.filter(mod => modKeys.includes(mod)).length;
+    },
 
-            const metaData = dw.mdInfo[item.md];
-            const isGear = metaData?.isArmor || metaData?.isAccessory || metaData?.isWeapon;
-            const isRune = metaData?.isSkill && Array.from(metaData?.tags || []).includes("rune");
-            const isPassive = Array.from(metaData?.tags || []).includes("passive");
-            const modKeys = Object.keys(item.mods || {});
-            const modValues = Object.values(item.mods || {});
-            const modCount = modKeys.length;
+    // Check if any mod in the item has a value greater than or equal to the provided threshold
+    hasModWithMinQuality(item, modList, minQuality) {
+        const modKeys = Object.keys(item.mods || {});
+        const modValues = Object.values(item.mods || {});
+        return modValues.some((modValue, i) => modList.includes(modKeys[i]) && modValue >= minQuality);
+    },
 
-            /**
-             * Helper function to determine if an item has strong mods based on individual values or the sum of valid mod values.
-             */
-            const hasStrongMods = (validMods, minModValue = 5, sumThreshold = 8) => {
-                let sumOfValidMods = 0;
-                let hasModAboveThreshold = false;
+    // Calculate the sum of mod values from a list of mods
+    sumModQualityFromList(item, modList) {
+        const modKeys = Object.keys(item.mods || {});
+        const modValues = Object.values(item.mods || {});
+        return modValues.reduce((sum, modValue, i) => {
+            return modList.includes(modKeys[i]) ? sum + modValue : sum;
+        }, 0);
+    },
 
-                modValues.forEach((mod, i) => {
-                    if (validMods.includes(modKeys[i])) {
-                        sumOfValidMods += mod;
-                        if (mod >= minModValue) {
-                            hasModAboveThreshold = true;
-                        }
-                    }
-                });
+    // Calculate the sum of mod values from a list of mods
+    sumModQuality(item) {
+        const modValues = Object.values(item.mods || {});
+        return modValues.reduce((sum, modValue, i) => {
+            return sum + modValue
+        }, 0);
+    },
 
-                return hasModAboveThreshold && sumOfValidMods >= sumThreshold;
-            };
+    // Count the number of sockets in the item
+    countSockets(item) {
+        return item?.sockets?.length || 0;
+    },
 
-            /**
-             * Helper function to check if an item has mods with high values (>= 6).
-             * @returns {boolean} True if the item has high mod values, otherwise false.
-             */
-            const hasHighModValues = (min = 8) => modValues.some(mod => mod >= min);
+    // Check if item is a weapon
+    isWeapon(item) {
+        const metaData = dw.mdInfo[item.md];
+        return metaData?.isWeapon || false;
+    },
 
-            if(hasHighModValues()) {
-                return
+    // Check if item is armor
+    isArmor(item) {
+        const metaData = dw.mdInfo[item.md];
+        return metaData?.isArmor || false;
+    },
+
+    // Check if item is an accessory
+    isAccessory(item) {
+        const metaData = dw.mdInfo[item.md];
+        return metaData?.isAccessory || false;
+    },
+
+    // Check if item is a rune
+    isRune(item) {
+        const metaData = dw.mdInfo[item.md];
+        return metaData?.isSkill && Array.from(metaData?.tags || []).includes("rune");
+    },
+
+    // Check if item is passive
+    isPassive(item) {
+        const metaData = dw.mdInfo[item.md];
+        return Array.from(metaData?.tags || []).includes("passive");
+    },
+
+    // Condition functions to evaluate against the item
+    conditions: {
+        // Check if the item has at least a certain number of mods from the mod list
+        min_quantity: (item, condition, mods) => {
+            const modCount = Misc.countModsFromList(item, mods);
+            console.log(`Checking min_quantity: ${modCount} >= ${condition.value}`);
+            return modCount >= condition.value;
+        },
+
+        // Check if the item has at least one mod from the list with a value greater than or equal to the threshold
+        min_quality: (item, condition, mods) => {
+            const hasModWithQuality = Misc.hasModWithMinQuality(item, mods, condition.value);
+            console.log(`Checking min_quality: found mod >= ${condition.value}`);
+            return hasModWithQuality;
+        },
+
+        // Check if the sum of the mod values from the list is greater than or equal to the threshold
+        min_sum_quality: (item, condition, mods) => {
+            const totalModQuality = Misc.sumModQualityFromList(item, mods);
+            console.log(`Checking min_sum_quality: ${totalModQuality} >= ${condition.value}`);
+            return totalModQuality >= condition.value;
+        },
+
+        // Check if the sum of the mod values from the list is greater than or equal to the threshold
+        min_sum_quality_total: (item, condition) => {
+            const totalModQuality = Misc.sumModQuality(item);
+            console.log(`Checking sum of any mods: ${totalModQuality} >= ${condition.value}`);
+            return totalModQuality >= condition.value;
+        },
+
+        // Check if the item has at least a certain number of sockets
+        min_socket: (item, condition) => {
+            const socketCount = Misc.countSockets(item);
+            console.log(`Checking min_socket: ${socketCount} >= ${condition.value}`);
+            return socketCount >= condition.value;
+        }
+    },
+
+    // Helper function to evaluate conditions
+    evaluateConditions(item, conditions, mods) {
+        const operator = conditions.operator || "AND"; // Default to AND if not specified
+        const conditionResults = conditions.conditions.map(filterCondition => {
+            const conditionFunction = Misc.conditions[filterCondition.condition];
+            if (conditionFunction) {
+                return conditionFunction(item, filterCondition, mods);
             }
-
-            // Handle gear items (weapons, armor, accessories)
-            if (isGear) {
-                const weaponMods = ["physDmgIncLocal", "physDmgInc", "physDmgLocal", "physDmg", "dmg", "hpLeech", "hpGain", "gcdr", "gcdrLocal"];
-                const accessoryMods = ["physDmgIncLocal", "physDmgInc", "physDmgLocal", "physDmg", "dmg", "hpInc", "hpRegen", "hp"];
-                const armorMods = ["hpInc", "hpRegen", "hp"];
-
-                // Preserve weapons with 2+ relevant mods or strong mods
-                if (metaData.isWeapon && (hasStrongMods(weaponMods))) return;
-
-                // Preserve accessories with 2+ relevant mods or strong mods
-                if (metaData.isAccessory && (hasStrongMods(accessoryMods))) return;
-
-                // Preserve armor with 2+ relevant mods or strong mods
-                if (metaData.isArmor && (hasStrongMods(armorMods))) return;
-
-                // Preserve items with 4+ mods or high mod values
-                if (modCount >= 4) return;
-
-                // Mark the item for removal
-                itemsToRemove.push(index);
-            }
-
-            // Handle rune items
-            else if (isRune) {
-                const avoidRunes = ["aimed", "cast", "charged", "instant", "deferring"];
-                const shouldAvoid = avoidRunes.some(type => Array.from(metaData?.tags || []).includes(type));
-                const socketsCount = item?.sockets?.length || 0;
-
-                // Preserve runes with 3+ sockets
-                if (socketsCount >= 3) {
-                    console.log(`Preserving socketed rune: ${metaData.name} [${item.qual}] +${socketsCount}`);
-                    return;
-                }
-
-                // Remove runes that should be avoided
-                if (shouldAvoid) {
-                    itemsToRemove.push(index);
-                    console.log(`Removing rune: ${metaData.name} [${item.qual}] +${socketsCount}`);
-                }
-            }
-
-            // Handle passive items
-            else if (isPassive) {
-                const passiveMods = ["hpInc", "hpRegenInc", "gcdr", "physDmgInc"];
-
-                // Preserve passives with strong mods or high mod values
-                if (hasStrongMods(passiveMods, 4, 7)) return;
-
-                if(hasHighModValues(6)) {
-                    return
-                }
-
-                // Mark the passive for removal
-                itemsToRemove.push(index);
-            }
-
-            // Handle combineable resources
-            else if (["wood", "flax", "rock", "portalScroll"].includes(item.md) || metaData.isMat) {
-                itemsToCombine.push(index);
-            }
+            return false; // Return false if the condition function is not found
         });
 
-        // Remove marked items
-        if (itemsToRemove.length > 0) {
-            console.log("Removing items:", itemsToRemove);
-            // itemsToRemove.forEach(inventoryIndex => dw.deleteItem(inventoryIndex));
+        if (operator === "AND") {
+            return conditionResults.every(result => result); // Apply AND logic
+        } else if (operator === "OR") {
+            return conditionResults.some(result => result); // Apply OR logic
         }
 
-        // Combine resources
-        if (itemsToCombine.length > 0) {
-            dw.combineItems(itemsToCombine);
+        return false; // Default to false if the operator is not recognized
+    },
+
+
+    /**
+ * Cleans the inventory by removing unwanted items, combining resources, and sorting the inventory.
+ * Items are classified by mod quality, mod count, and specific mod criteria.
+ */
+cleanInventory() {
+    const itemsToCombine = [];
+    const itemsToRemove = [];
+
+    // Helper function to log evaluation results
+    const logEvaluation = (item, result, message) => {
+        console.log(`Item [${item.md}] - ${result ? 'Kept' : 'Removed'}: ${message}`);
+    };
+
+    // Helper function to log exclusion with colored mods
+    const logExclusion = (item, mods, reason) => {
+        const itemName = dw.mdInfo[item.md]?.name || 'Unknown Item';
+        const modCount = mods.length;
+        let color = 'white'; // Default to white
+        switch(modCount) {
+            case 1: color = 'lightgreen'; break;
+            case 2: color = 'green'; break;
+            case 3: color = 'blue'; break;
+            case 4: color = 'purple'; break;
+            case 5: color = 'gold'; break; // Assuming unique item has 5 mods
         }
 
-        // Sort inventory after cleaning
+        // Format mods with their values in white
+        const modDetails = mods.map(mod => `${mod}: ${item.mods[mod]}`).join(', ');
+
+        // Log the exclusion using DEBUG.log with color and reason
+        DEBUG.log(`<span style="color: ${color};">${itemName}</span> (${modDetails}) excluded because: ${reason}`);
+    };
+
+    // Loop through each item in the inventory
+    dw.character.inventory.forEach((item, index) => {
+        if (!item) return;
+
+        const mods = Object.keys(item.mods || {});
+        const tags = Array.from(dw.mdInfo[item.md]?.tags || []) || [];
+
+        // Log item type and mod details
+        console.log(`Evaluating item [${item.md}] - Mods: ${mods.join(', ')}`);
+
+        // Check if any mod matches the global mods_to_keep list
+        const hasGlobalKeepMod = mods.some(mod => ITEMS.global.mods_to_keep.includes(mod));
+        if (hasGlobalKeepMod) {
+            logEvaluation(item, true, `Item has global mod to keep`);
+            return;
+        }
+
+        // Check if any tags matches the global tags_to_keep list
+        const hasGlobalKeepTag = tags.some(tag => ITEMS.global.tags_to_keep.includes(tag));
+        if (hasGlobalKeepTag) {
+            logEvaluation(item, true, `Item has global tag to keep`);
+            return;
+        }
+
+        // Check if any md matches the global mds_to_keep list
+        const hasGlobalKeepMd = ITEMS.global.mds_to_keep.includes(item.md);
+        if (hasGlobalKeepMd) {
+            logEvaluation(item, true, `Item has global md to keep`);
+            return;
+        }
+
+        // Check if any mod has a high quality based on global settings
+        const highQualityMod = Object.values(item.mods || {}).some(modValue => modValue >= ITEMS.global.min_any_mod_quality);
+        if (highQualityMod) {
+            logEvaluation(item, true, `Global high mod quality check: mod quality >= ${ITEMS.global.min_any_mod_quality}`);
+            return;
+        }
+
+        // Check if item has enough mods
+        const quantityMod = mods.length >= ITEMS.global.min_any_mod_quantity;
+        if (quantityMod) {
+            logEvaluation(item, true, `Global high mod quantity check: mod quantity >= ${ITEMS.global.min_any_mod_quantity}`);
+            return;
+        }
+
+        // Evaluate conditions for weapons
+        if (Misc.isWeapon(item)) {
+            const { conditions } = ITEMS.weapon;
+            const result = Misc.evaluateConditions(item, conditions, ITEMS.weapon.mods);
+            logEvaluation(item, result, 'Weapon conditions evaluated');
+            if (result) return;
+            logExclusion(item, mods, 'Weapon conditions failed');
+            itemsToRemove.push(index); // Mark for removal if conditions fail
+        }
+
+        // Evaluate conditions for armor
+        else if (Misc.isArmor(item)) {
+            const { conditions } = ITEMS.armor;
+            const result = Misc.evaluateConditions(item, conditions, ITEMS.armor.mods);
+            logEvaluation(item, result, 'Armor conditions evaluated');
+            if (result) return;
+            logExclusion(item, mods, 'Armor conditions failed');
+            itemsToRemove.push(index); // Mark for removal if conditions fail
+        }
+
+        // Evaluate conditions for accessories
+        else if (Misc.isAccessory(item)) {
+            const { conditions } = ITEMS.accessory;
+            const result = Misc.evaluateConditions(item, conditions, ITEMS.accessory.mods);
+            logEvaluation(item, result, 'Accessory conditions evaluated');
+            if (result) return;
+            logExclusion(item, mods, 'Accessory conditions failed');
+            itemsToRemove.push(index); // Mark for removal if conditions fail
+        }
+
+        // Evaluate conditions for runes
+        else if (Misc.isRune(item)) {
+            const { conditions } = ITEMS.rune;
+            const result = Misc.evaluateConditions(item, conditions, []);
+            logEvaluation(item, result, 'Rune socket conditions evaluated');
+            if (result) return;
+            logExclusion(item, mods, 'Rune conditions failed');
+            itemsToRemove.push(index); // Mark for removal if conditions fail
+        }
+
+        // Evaluate conditions for passives
+        else if (Misc.isPassive(item)) {
+            const { conditions } = ITEMS.passive;
+            const result = Misc.evaluateConditions(item, conditions, ITEMS.passive.mods);
+            logEvaluation(item, result, 'Passive conditions evaluated');
+            if (result) return;
+            logExclusion(item, mods, 'Passive conditions failed');
+            itemsToRemove.push(index); // Mark for removal if conditions fail
+        }
+
+        // Handle combinable resources
+        else if (ITEMS.combine.includes(item.md) || dw.mdInfo[item.md]?.isMat) {
+            logEvaluation(item, true, 'Item marked for combining');
+            itemsToCombine.push(index);
+        }
+    });
+
+    // Remove marked items
+    if (CONFIG.removeItems && itemsToRemove.length > 0) {
+        itemsToRemove.forEach(inventoryIndex => dw.deleteItem(inventoryIndex));
+    }
+
+    // Combine resources
+    if (CONFIG.combineItems && itemsToCombine.length > 0) {
+        dw.combineItems(itemsToCombine);
+    }
+
+    // Sort inventory after cleaning
+    if (CONFIG.sortItems) {
         dw.sortInventory();
     }
 }
+
+};
+
 
 
 /**
  * Event handling and game loop
  */
 const eventPriority = [
+    Movement.checkCharacterIdle,
+    Movement.checkTerrain,
+    Movement.checkZoneLevel,
     Misc.cleanInventory,
     Action.useHealSkill,
     Action.useGraftSkill,
@@ -1294,7 +1725,7 @@ const eventPriority = [
     Movement.moveMission,
     Movement.followAllied,
     Movement.followAndHealAllied,
-    Movement.checkCharacterIdle
+    Movement.exploreNewAreas
 ];
 
 /**
@@ -1311,6 +1742,7 @@ function handleGameEvents() {
         if (target.toAttack && attackers.length === 0 && (dw.character.gcd >= Date.now() || dw.character.hp / dw.character.maxHp < 0.5)) {
             DEBUG.log("Waiting...");
             dw.stop();
+            Movement.exploreNewAreas()
             return;
         }
 
@@ -1342,7 +1774,7 @@ function gameLoop() {
     if (IS_ACTIVE) {
         handleGameEvents();
     }
-    setTimeout(gameLoop, 250); // Re-run the loop every 250ms
+    setTimeout(gameLoop, 350); // Re-run the loop every 250ms
 }
 
 gameLoop();
@@ -1353,6 +1785,24 @@ dw.on('drawUnder', (ctx) => {
     // Get character's canvas coordinates
     const characterX = dw.toCanvasX(dw.c.x);
     const characterY = dw.toCanvasY(dw.c.y);
+
+    // Draw visited areas with bubbles representing visitation scores
+    Movement.visitedPositions.forEach(pos => {
+        const canvasX = dw.toCanvasX(pos.x);
+        const canvasY = dw.toCanvasY(pos.y);
+
+        // Set bubble color based on the visitation score (higher score = darker color)
+        // Example: more visited areas get a darker green, less visited are lighter green.
+        let alpha = Math.min(pos.score / 10, 1); // Cap alpha at 1 for highly visited areas
+        ctx.fillStyle = `rgba(139, 195, 74, ${alpha * 3})`; // Green color with varying transparency based on score
+
+        const radius = dw.constants.PX_PER_UNIT_ZOOMED * 0.5; // Bubble radius for each visited area
+
+        // Draw the bubble
+        ctx.beginPath();
+        ctx.arc(canvasX, canvasY, radius, 0, Math.PI * 2);
+        ctx.fill();
+    });
 
     // Draw the monsters and related information
     for (let i = 0; i < monsterFinder.length; i++) {
