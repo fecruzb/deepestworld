@@ -1339,7 +1339,7 @@ const Movement = {
      * @returns {Object|null} The next direction to move, or null if no valid movement is found.
      */
     exploreNewAreas() {
-        if(!config.exploreNewAreas) {
+        if(!CONFIG.exploreNewAreas) {
             return
         }
         
