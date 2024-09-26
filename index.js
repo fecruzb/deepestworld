@@ -18,16 +18,16 @@ const visitedPositions = [];
  * @property {number} monsterProximityRange - Radius to check the proximity of other monsters.
  */
 const SETTINGS = {
-    visionConeAngle: Math.PI * 1.10, 
+    globalProximityToAction: 0.3,
+    visionConeAngle: Math.PI * 1.15, 
     visionConeRadius: 3.2, 
-    predictionTime: 1, 
-    pathStepSize: 0.75,
+    predictionTime: 3, 
+    pathStepSize: 1,
     maxPathfindingIterations: 700,
     interpolationSteps: 100,
     gooProximityRange: 2,
     monsterProximityRange: 1.5,
     zoneLevelSuicide: 0,
-    rareMonsterLimit: 5,
     scoreLimit: -10,
     idleTime: 15,
 };
@@ -65,13 +65,13 @@ const SKILLS = {
         range: 0.7,
     },
     shield: {
-        enable: true,
+        enable: false,
         index: 2,
         range: 0.5,
         withBomb: true
     },
     heal: {
-        enable: true,
+        enable: false,
         index: 1,
         range: 0.5,
         hpThreshold: 0.6,
@@ -120,68 +120,72 @@ const SKILLS = {
 
 const ITEMS = {
     global: {
-        min_any_mod_quantity: 5, // Any mod with quality 8 or above should be kept
-        min_any_mod_quality: 8, // Any mod with quality 8 or above should be kept
-        mods_to_keep: ["masochism"], // List of mods that will keep the item regardless of other conditions
+        min_any_mod_quantity: 4, // Any mod with quality 8 or above should be kept
+        min_any_mod_quality: 10, // Any mod with quality 8 or above should be kept
+        mods_to_keep: ["masochism", "physborn", "fireborn"], // List of mods that will keep the item regardless of other conditions
         tags_to_keep: [],
         mds_to_keep: []
     },
     weapon: {
-        mods: ["physDmgIncLocal", "physDmgInc", "physDmgLocal", "physDmg", "dmg", "hpLeech", "hpGain", "gcdr", "gcdrLocal"], // Mods to look for
+        mods: [
+            "physDmgIncLocal", 
+            "physDmgLocal", 
+            "hpGain"
+        ], // Mods to look for
         conditions: {
-            operator: "OR", // Operator for combining conditions
+            operator: "AND", // Operator for combining conditions
             conditions: [
                 { 
                     condition: "min_quantity", // Check for minimum number of mods
-                    value: 3 // Minimum mods from the list required
+                    value: 2 // Minimum mods from the list required
                 },
                 { 
                     condition: "min_quality", // Check for minimum mod quality
-                    value: 5 // At least one mod from the list should be >= 5 quality
+                    value: 4 // At least one mod from the list should be >= 5 quality
                 },
                 { 
                     condition: "min_sum_quality", // Check for minimum sum of mod qualities
-                    value: 10 // Combined quality of mods from the list should be >= 8
+                    value: 7 // Combined quality of mods from the list should be >= 8
                 }
             ]
         }
     },
     accessory: {
-        mods: ["physDmgIncLocal", "physDmgInc", "physDmgLocal", "physDmg", "dmg", "hpRegen", "hp"], // Mods to look for
+        mods: ["physDmg", "dmg", "hp", "hpRegen"], // Mods to look for
         conditions: {
-            operator: "OR", // Operator for combining conditions
+            operator: "AND", // Operator for combining conditions
             conditions: [
                 { 
                     condition: "min_quantity", 
-                    value: 3
+                    value: 2
                 },
                 { 
                     condition: "min_quality", 
-                    value: 5 
+                    value: 4
                 },
                 { 
                     condition: "min_sum_quality", 
-                    value: 10 
+                    value: 7 
                 }
             ]
         }
     },
     armor: {
-        mods: ["hpInc", "hpRegen", "hp", "defLocal", "defIncLocal", "physRes"], // Mods to look for
+        mods: ["hp", "dmg", "hpRegen", "physDmg"], // Mods to look for
         conditions: {
-            operator: "OR", // Operator for combining conditions
+            operator: "AND", // Operator for combining conditions
             conditions: [
                 { 
                     condition: "min_quantity", 
-                    value: 3
+                    value: 2
                 },
                 { 
                     condition: "min_quality", 
-                    value: 5 
+                    value: 4
                 },
                 { 
                     condition: "min_sum_quality", 
-                    value: 10
+                    value: 7
                 }
             ]
         }
@@ -198,7 +202,7 @@ const ITEMS = {
         }
     },
     passive: {
-        mods: ["hpInc", "hpRegenInc", "gcdr", "physDmgInc"], // Mods to look for
+        mods: ["hpInc", "hpRegenInc", "gcdr", "physDmgInc", "dmg", "dmgInc", "physDmg"], // Mods to look for
         conditions: {
             operator: "OR",
             conditions: [
@@ -208,20 +212,126 @@ const ITEMS = {
                 },
                 { 
                     condition: "min_quality", 
-                    value: 4 // At least one mod from the list has to be equal or greater than 4
+                    value: 5 // At least one mod from the list has to be equal or greater than 4
                 },
                 { 
                     condition: "min_sum_quality", 
-                    value: 6 // Combined quality of mods from the list should be >= 6
+                    value: 7 // Combined quality of mods from the list should be >= 6
                 },
                 { 
                     condition: "min_sum_quality_total", 
-                    value: 8 // Combined quality of mods from the list should be >= 8
+                    value: 10 // Combined quality of mods from the list should be >= 8
                 }
             ]
         }
     },
     combine: ["wood", "flax", "rock", "portalScroll"],  // Combineable resource items
+};
+
+const SCORE = {
+    monster: {
+        /**
+         * Base score for all monsters. 
+         * Ensures that monsters have a starting priority over resources.
+         */
+        baseScore: 15,
+
+        /**
+         * Bonus if the monster is injured (current HP < max HP).
+         * Prioritizes monsters that are easier to defeat due to lower HP.
+         */
+        injuredBonus: 10,
+
+        /**
+         * Large bonus if the monster is specifically targeting the player character.
+         * Prioritizes immediate threats that are actively engaging the player.
+         */
+        targetCharacterBonus: 500,
+
+        /**
+         * Negative adjustment if the monster is marked as huntable.
+         * Reduces priority for huntable monsters, which are less urgent to defeat.
+         */
+        canHunt: -100,
+
+        /**
+         * Multiplier for rare monsters based on their rarity level.
+         * If the rarity or HP exceeds the thresholds, the monster is harder to defeat,
+         * and should be deprioritized. Higher rarity increases the score unless too difficult.
+         */
+        rareMonsterMultiplier: 30,
+
+        /**
+         * Rarity level threshold. Monsters with rarity above this level are avoided,
+         * as they are considered too strong to defeat.
+         */
+        rareMonsterLimit: 6,
+
+        /**
+         * HP threshold. Monsters with max HP above this level are avoided,
+         * as they are considered too tough to handle, even if their rarity is low.
+         */
+        rareMonsterHpThreshold: 12000,
+    },
+
+    resource: {
+        /**
+         * Base score for resources. Generally negative because resources are deprioritized 
+         * compared to monsters, unless gathering resources is specifically required.
+         */
+        baseScore: -20
+    },
+
+    proximity: {
+        /**
+         * Negative adjustment for proximity to "goo" monsters.
+         * This score is applied for EACH goo near the target. Attacking near goo is risky
+         * because multiple goos can merge to form a much stronger goo monster.
+         */
+        goo: -10,
+
+        /**
+         * Negative adjustment for each nearby monster around the target.
+         * This penalty is applied for EACH nearby monster, encouraging prioritization of
+         * safer fights with fewer monsters in close proximity.
+         */
+        nearbyMonster: -20,
+
+        /**
+         * Distance-based multiplier that reduces the score based on the distance to the target.
+         * Applied for both monsters and resources, with closer targets prioritized over distant ones.
+         */
+        distanceMultiplier: -1
+    },
+
+    levelDifference: {
+        /**
+         * Enable or disable score adjustments based on the difference in levels between the player and the monster.
+         * When enabled, monsters with a level closer to the player's level receive higher priority.
+         */
+        enabled: false,
+
+        /**
+         * Bonus for monsters that are the same level as the player.
+         * These monsters are considered the most balanced challenges and are prioritized.
+         */
+        sameLevelBonus: 20,
+
+        /**
+         * Adjustment factor applied for each level of difference between the player and the monster.
+         * Larger level differences, whether higher or lower, decrease the score.
+         */
+        differenceFactor: -3
+    },
+
+    path: {
+        /**
+         * Negative adjustment if there are monsters along the path to the target.
+         * This penalty is applied for EACH monster along the path, as these obstacles 
+         * make it harder to reach the target without facing additional combat.
+         */
+        monstersAlongPath: -20
+    }
 };
 
 const protectList = [];
@@ -302,12 +412,12 @@ const Util = {
      * @param {Object} point - The target point with position (x, y).
      * @returns {boolean} True if the point is within the vision cone, false otherwise.
      */
-    isPointInCone(observer, point) {
+    isPointInCone(observer, point, coneRadius = SETTINGS.visionConeRadius, coneAngle = SETTINGS.visionConeAngle  ) {
         const observerDir = { x: observer.dx, y: observer.dy };
         const toPoint = { x: point.x - observer.x, y: point.y - observer.y };
         const angleToPoint = this.angleBetween(observerDir, toPoint);
         const distToPoint = this.magnitude(toPoint);
-        return angleToPoint <= SETTINGS.visionConeAngle / 2 && distToPoint <= SETTINGS.visionConeRadius;
+        return angleToPoint <= coneAngle / 2 && distToPoint <= coneRadius;
     },
 
     /**
@@ -415,7 +525,7 @@ const Util = {
      * @returns {boolean} True if the line between the points is safe, false otherwise.
      */
     isSafePath(target, origin) {
-        for (const monster of Finder.getMonsters()) {
+        for (const monster of Finder.getMonsters()) {    
             if (monster.targetId !== dw.c.id && monster.bad > 0 && this.isLineInConeOfVision(monster, target, origin)) {
                 return false;
             }
@@ -499,114 +609,138 @@ const Util = {
 
         return totalDistance;
     },
-    /**
-     * Generates a safe path from the character's position to a target position, avoiding monsters.
-     * @param {Object} characterPos - The starting position (x, y).
-     * @param {Object} targetPos - The target position (x, y).
-     * @returns {Array<Object>} The safe path as an array of positions (x, y).
-     */
-    generateSafePath(characterPos, targetPos) {
-        // Se a distância entre o personagem e o alvo for menor que 1, retorna caminho direto
-        if (dw.distance(characterPos.x, characterPos.y, targetPos.x, targetPos.y) < 0.7) {
-            return [characterPos, targetPos];
+
+   /**
+ * Generates a safe path from the character's position to a target position, avoiding monsters.
+ * @param {Object} characterPos - The starting position (x, y).
+ * @param {Object} targetPos - The target position (x, y, dx, dy) of the monster, including direction.
+ * @returns {Array<Object>} The safe path as an array of positions (x, y).
+ */
+generateSafePath(characterPos, targetPos) {
+
+    let adjustedTargetPos = targetPos
+    if(targetPos.md && dw.mdInfo[targetPos.md].isMonster && targetPos.bad > 0) {
+        // Garantir que estamos pegando o vetor direção correto (dx, dy)
+        const dx = targetPos.dx;
+        const dy = targetPos.dy;
+
+        // Normaliza o vetor de direção para evitar problemas com vetores grandes
+        const magnitude = Math.sqrt(dx * dx + dy * dy); // Calcular a magnitude
+        const normDx = dx / magnitude;
+        const normDy = dy / magnitude;
+
+        // Calcula o ponto seguro a 0.5 unidades atrás do monstro
+         adjustedTargetPos = {
+            ...targetPos,
+            x: targetPos.x - normDx * SETTINGS.globalProximityToAction, // Move 0.5 unidades na direção oposta ao olhar
+            y: targetPos.y - normDy * SETTINGS.globalProximityToAction,
+        };
+
+    }
+    
+    // Checa se a distância entre o personagem e o target ajustado é menor que 0.7
+    if (dw.distance(characterPos.x, characterPos.y, adjustedTargetPos.x, adjustedTargetPos.y) < 1) {
+        return [characterPos, adjustedTargetPos];
+    }
+
+    // Continua com o cálculo do caminho seguro
+    const openList = [];
+    const closedList = [];
+    const path = [];
+    const directions = [
+        { x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 },
+        { x: 1, y: 1 }, { x: -1, y: 1 }, { x: 1, y: -1 }, { x: -1, y: -1 }
+    ];
+
+    let iterations = 0;
+
+    const startNode = new Node(characterPos, 0, dw.distance(characterPos.x, characterPos.y, adjustedTargetPos.x, adjustedTargetPos.y));
+    openList.push(startNode);
+
+    while (openList.length > 0) {
+        iterations++;
+        if (iterations > SETTINGS.maxPathfindingIterations) {
+            console.log("Iteration limit reached. Aborting!");
+            return path.reverse(); // Retorna o caminho gerado até aqui
         }
 
-        const openList = [];
-        const closedList = [];
-        const path = [];
-        const directions = [
-            { x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 },
-            { x: 1, y: 1 }, { x: -1, y: 1 }, { x: 1, y: -1 }, { x: -1, y: -1 }
-        ];
+        // Seleciona o nó com o menor custo total (f)
+        let currentNode = openList.reduce((prev, node) => node.f < prev.f ? node : prev);
 
-        let iterations = 0;
+        // Se o destino foi alcançado, constrói o caminho
+        if (dw.distance(currentNode.pos.x, currentNode.pos.y, adjustedTargetPos.x, adjustedTargetPos.y) <= SETTINGS.pathStepSize) {
+            let node = currentNode;
+            while (node) {
+                path.push(node.pos);
+                node = node.parent;
+            }
+            path.reverse(); // Retorna o caminho da origem ao destino
 
-        const startNode = new Node(characterPos, 0, dw.distance(characterPos.x, characterPos.y, targetPos.x, targetPos.y));
-        openList.push(startNode);
-
-        while (openList.length > 0) {
-            iterations++;
-            if (iterations > SETTINGS.maxPathfindingIterations) {
-                console.log("Iteration limit reached. Aborting!");
-                return path.reverse(); // Return the path generated so far
+            // Garante que o último ponto seja exatamente o targetPos ajustado
+            if (path.length === 0 || (path[path.length - 1].x !== adjustedTargetPos.x || path[path.length - 1].y !== adjustedTargetPos.y)) {
+                path.push(adjustedTargetPos); // Adiciona o ponto de destino ajustado se não estiver no caminho
             }
 
-            // Select the node with the lowest total cost (f)
-            let currentNode = openList.reduce((prev, node) => node.f < prev.f ? node : prev);
+            return path;
+        }
 
-            // If the destination is reached, build the path
-            if (dw.distance(currentNode.pos.x, currentNode.pos.y, targetPos.x, targetPos.y) <= SETTINGS.pathStepSize) {
-                let node = currentNode;
-                while (node) {
-                    path.push(node.pos);
-                    node = node.parent;
-                }
-                path.reverse(); // Retorna o caminho da origem ao destino
+        // Remove o nó atual da lista aberta e o adiciona à lista fechada
+        openList.splice(openList.indexOf(currentNode), 1);
+        closedList.push(currentNode);
 
-                // Garante que o último ponto seja exatamente targetPos
-                if (path.length === 0 || (path[path.length - 1].x !== targetPos.x || path[path.length - 1].y !== targetPos.y)) {
-                    path.push(targetPos); // Adiciona o ponto de destino se não estiver no caminho
-                }
+        // Ordena as direções com base na proximidade ao alvo
+        const sortedDirections = directions.slice().sort((a, b) => {
+            const distA = dw.distance(
+                currentNode.pos.x + a.x * SETTINGS.pathStepSize,
+                currentNode.pos.y + a.y * SETTINGS.pathStepSize,
+                adjustedTargetPos.x,
+                adjustedTargetPos.y
+            );
+            const distB = dw.distance(
+                currentNode.pos.x + b.x * SETTINGS.pathStepSize,
+                currentNode.pos.y + b.y * SETTINGS.pathStepSize,
+                adjustedTargetPos.x,
+                adjustedTargetPos.y
+            );
+            return distA - distB; // Ordena da mais próxima para a mais distante
+        });
 
-                return path;
+        // Explora os nós vizinhos
+        for (const direction of sortedDirections) {
+            const newPos = {
+                x: currentNode.pos.x + direction.x * SETTINGS.pathStepSize,
+                y: currentNode.pos.y + direction.y * SETTINGS.pathStepSize
+            };
+
+            if (Util.isPathBlocked(newPos, currentNode.pos)) {
+                continue;
             }
 
-            // Remove the current node from the open list and add it to the closed list
-            openList.splice(openList.indexOf(currentNode), 1);
-            closedList.push(currentNode);
+            // Verifica se o novo nó é seguro ou já foi explorado
+            if (!Util.isSafe(newPos) || closedList.find(node => node.pos.x === newPos.x && node.pos.y === newPos.y)) {
+                continue;
+            }
 
-            // Sort directions based on proximity to the target
-            const sortedDirections = directions.slice().sort((a, b) => {
-                const distA = dw.distance(
-                    currentNode.pos.x + a.x * SETTINGS.pathStepSize,
-                    currentNode.pos.y + a.y * SETTINGS.pathStepSize,
-                    targetPos.x,
-                    targetPos.y
-                );
-                const distB = dw.distance(
-                    currentNode.pos.x + b.x * SETTINGS.pathStepSize,
-                    currentNode.pos.y + b.y * SETTINGS.pathStepSize,
-                    targetPos.x,
-                    targetPos.y
-                );
-                return distA - distB; // Sort from closest to furthest
-            });
+            const gScore = currentNode.g + SETTINGS.pathStepSize;
+            let neighborNode = openList.find(node => node.pos.x === newPos.x && node.pos.y === newPos.y);
 
-            // Explore neighboring nodes
-            for (const direction of sortedDirections) {
-                const newPos = {
-                    x: currentNode.pos.x + direction.x * SETTINGS.pathStepSize,
-                    y: currentNode.pos.y + direction.y * SETTINGS.pathStepSize
-                };
-
-                if (Util.isPathBlocked(newPos, currentNode.pos)) 
-                {
-                    continue;
-                }
-
-                // Check if the new node is safe or already explored
-                if (!Util.isSafe(newPos) || closedList.find(node => node.pos.x === newPos.x && node.pos.y === newPos.y)) {
-                    continue;
-                }
-
-                const gScore = currentNode.g + SETTINGS.pathStepSize;
-                let neighborNode = openList.find(node => node.pos.x === newPos.x && node.pos.y === newPos.y);
-
-                // If the neighbor node is not in the open list, or the new path is cheaper
-                if (!neighborNode) {
-                    const hScore = dw.distance(newPos.x, newPos.y, targetPos.x, targetPos.y);
-                    neighborNode = new Node(newPos, gScore, hScore, currentNode);
-                    openList.push(neighborNode);
-                } else if (gScore < neighborNode.g) {
-                    neighborNode.g = gScore;
-                    neighborNode.f = gScore + neighborNode.h;
-                    neighborNode.parent = currentNode;
-                }
+            // Se o nó vizinho não está na lista aberta, ou se o novo caminho é mais barato
+            if (!neighborNode) {
+                const hScore = dw.distance(newPos.x, newPos.y, adjustedTargetPos.x, adjustedTargetPos.y);
+                neighborNode = new Node(newPos, gScore, hScore, currentNode);
+                openList.push(neighborNode);
+            } else if (gScore < neighborNode.g) {
+                neighborNode.g = gScore;
+                neighborNode.f = gScore + neighborNode.h;
+                neighborNode.parent = currentNode;
             }
         }
-        console.log("No path found.");
-        return path; // Return the path generated so far or empty if no path found
-    },
+    }
+
+    console.log("No path found.");
+    return path; // Retorna o caminho gerado até o momento ou vazio se nenhum caminho foi encontrado
+},
+
 
 
     /**
@@ -834,41 +968,49 @@ const Finder = {
         return monsters.map(monster => {
             let score = 0;
 
-            if(dw.mdInfo[monster.md].isMonster) {
-                score += 15
-                if (monster.hp < monster.maxHp) score += 10;
-                // if (monster.bad && Util.isTrajectoryInMonsterCone(monster, dw.c)) score -= 2;
-                score -= Util.checkGooProximity(monster) * 5;
-                score -= Util.checkMonsterNearby(monster) * 20;
-                if ([dw.character.id, ...Finder.getFollowCharacters()].includes(monster.targetId)) score += 100;
-                score -= Util.distanceToTarget(monster);
-                // score -= Util.countMonstersAlongPath(monster) * 30;
+            // If the target is a monster
+            if (dw.mdInfo[monster.md].isMonster) {
+                score += SCORE.monster.baseScore; // Apply base score for monsters
+                if (monster.hp < monster.maxHp) {
+                    score += SCORE.monster.injuredBonus; // Apply bonus if the monster is injured
+                }
+                score += Util.checkGooProximity(monster) * SCORE.proximity.goo; // Apply goo proximity adjustment
+                score += Util.checkMonsterNearby(monster) * SCORE.proximity.nearbyMonster; // Apply adjustment for nearby monsters
+                if ([dw.character.id, ...Finder.getFollowCharacters()].includes(monster.targetId)) {
+                    score += SCORE.monster.targetCharacterBonus; // Apply bonus if the monster is targeting the character
+                }
+                score += Util.distanceToTarget(monster) * SCORE.proximity.distanceMultiplier; // Apply unified distance-based score adjustment
 
+                // Apply rare monster score
                 if (monster.r > 0) {
-                    score += (monster.r > SETTINGS.rareMonsterLimit || monster.maxHp > 13000) ? -(monster.r * 30) : monster.r * 30;
+                    if (monster.r <= SCORE.monster.rareMonsterLimit && monster.maxHp <= SCORE.monster.rareMonsterHpThreshold) {
+                        score += monster.r * SCORE.monster.rareMonsterMultiplier; // Positive multiplier for rare monsters
+                    } else {
+                        score -= monster.r * SCORE.monster.rareMonsterMultiplier; // Negative multiplier if not considered rare
+                    }
                 }
 
-                if(dw.mdInfo[monster.md].canHunt) {
-                    score -= 10;
-                }
+                // Apply adjustment for huntable monsters
+                score += dw.mdInfo[monster.md].canHunt ? SCORE.monster.canHunt : 0;
 
-                const levelDifference = Math.abs(monster.lvl - dw.c.lvl);
-
-                // Give highest score to monsters with same level as character
-                if (levelDifference === 0) {
-                    score += 20;
-                } else {
-                    score -= Math.abs(levelDifference) * 3
+                // Apply level difference score adjustment
+                if (SCORE.levelDifference.enabled) {
+                    const levelDifference = Math.abs(monster.lvl - dw.c.lvl);
+                    score += (levelDifference === 0) ? SCORE.levelDifference.sameLevelBonus
+                        : levelDifference * SCORE.levelDifference.differenceFactor;
                 }
             }
-            if(dw.mdInfo[monster.md].isResource) { 
-                score += -30
-                score -= Util.distanceToTarget(monster);
-                score -= Util.checkMonsterNearby(monster) * 20;
-                score -= Util.countMonstersAlongPath(monster) * 20;
+
+            // If the target is a resource
+            if (dw.mdInfo[monster.md].isResource) {
+                score += SCORE.resource.baseScore; // Apply base score for resources
+                score += Util.distanceToTarget(monster) * SCORE.proximity.distanceMultiplier; // Apply unified distance-based score adjustment
+                score += Util.checkMonsterNearby(monster) * SCORE.proximity.nearbyMonster; // Apply adjustment for nearby monsters
+                score += Util.countMonstersAlongPath(monster) * SCORE.path.monstersAlongPath; // Apply adjustment for monsters along the path
             }
+
             return { monster, score };
-        }).sort((a, b) => b.score - a.score);
+        }).sort((a, b) => b.score - a.score); // Sort monsters by score in descending order
     },
 
     /**
@@ -883,6 +1025,10 @@ const Finder = {
         // iterate to find a monster with path
         // find first mosnter with path and return the monster and the path
         const target = monsters?.find(m => {
+            if(m.monster.targetId === dw.c.i) {
+                return true
+            }
+            
             const path = Movement.findPath(m.monster)
             if(path?.path?.length > 1) {
                 m.path = path.path
@@ -1330,7 +1476,6 @@ const Movement = {
             const distance = Math.hypot(pos.x - currentPos.x, pos.y - currentPos.y);
             return distance <= 30; // Keep points that are within 30 units
         });
-        DEBUG.log("Cleaned up distant points. Remaining visited points: " + Movement.visitedPositions.length);
     },
 
     /**
@@ -1350,9 +1495,8 @@ const Movement = {
 
         // Mark current position as visited
         Movement.markPositionAsVisited(currentPos.x, currentPos.y);
-        DEBUG.log(`Marked position as visited: [${currentPos.x}, ${currentPos.y}]`);
 
-        const maxDistance = 10; // Maximum distance to move (increase to avoid small steps)
+        const maxDistance = 5; // Maximum distance to move (increase to avoid small steps)
         const directions = [
             { x: maxDistance, y: 0 }, { x: -maxDistance, y: 0 }, // Left and Right
             { x: 0, y: maxDistance }, { x: 0, y: -maxDistance }, // Up and Down
@@ -1738,13 +1882,14 @@ function handleGameEvents() {
 
         const attackers = Finder.getEntities().filter(e => e.targetId === dw.character.id && dw.mdInfo[e.md]?.isMonster);
 
-        // Wait if cooldowns are still active or HP is below max
-        if (target.toAttack && attackers.length === 0 && (dw.character.gcd >= Date.now() || dw.character.hp / dw.character.maxHp < 0.5)) {
-            DEBUG.log("Waiting...");
-            dw.stop();
-            Movement.exploreNewAreas()
-            return;
-        }
+        // // Wait if cooldowns are still active or HP is below max
+        // if (target.toAttack && attackers.length === 0 && (dw.character.hp !== dw.character.maxHp)) {
+        //     if(!Movement.exploreNewAreas()) {
+        //         DEBUG.log("Waiting...");
+        //         dw.stop();
+        //     }
+        //     return;
+        // }
 
         // Handle skill-based actions
         if (target.toSkill >= 0) {
@@ -1794,7 +1939,7 @@ dw.on('drawUnder', (ctx) => {
         // Set bubble color based on the visitation score (higher score = darker color)
         // Example: more visited areas get a darker green, less visited are lighter green.
         let alpha = Math.min(pos.score / 10, 1); // Cap alpha at 1 for highly visited areas
-        ctx.fillStyle = `rgba(139, 195, 74, ${alpha * 3})`; // Green color with varying transparency based on score
+        ctx.fillStyle = `rgba(0, 255, 0, ${alpha * 6})`; // Green color with varying transparency based on score
 
         const radius = dw.constants.PX_PER_UNIT_ZOOMED * 0.5; // Bubble radius for each visited area
 
@@ -1895,13 +2040,18 @@ dw.on('drawUnder', (ctx) => {
         ctx.font = '30px Arial';
         ctx.fillStyle = score >= 0 ? 'green' : 'white';
         ctx.fillText(`${Math.round(score)}`, monsterX, monsterY + 30);
+        
+        // Array of rainbow colors (ROYGBIV: Red, Orange, Yellow, Green, Blue, Indigo, Violet)
+        const rainbowColors = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet'];
 
         // Check for rare monster and draw concentric circles
         if (monster.r > 0) {
             const numCircles = monster.r;
             const circleSpacing = 12;
             for (let j = 0; j < numCircles; j++) {
-                ctx.strokeStyle = 'magenta';
+                // Cycle through rainbow colors
+                const colorIndex = j % rainbowColors.length;
+                ctx.strokeStyle = rainbowColors[colorIndex];
                 ctx.lineWidth = 2;
                 ctx.beginPath();
                 ctx.arc(
@@ -1914,6 +2064,7 @@ dw.on('drawUnder', (ctx) => {
                 ctx.stroke();
             }
         }
+
     }
 
     // Draw lines between monsters that are less than 2 units apart and show their distances
