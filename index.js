@@ -1051,7 +1051,7 @@ const Finder = {
         // iterate to find a monster with path
         // find first mosnter with path and return the monster and the path
         const target = monsters?.find(m => {
-            if(m.monster.targetId === dw.c.i) {
+            if(m.monster.targetId === dw.c.id) {
                 return true
             }
             
