@@ -51,7 +51,8 @@ const CONFIG = {
     followAlliedCharacter: false,
     healAndFollowAllied: false,
     enableTeleport: true,
-    moveToShrub: false
+    moveToShrub: false,
+    enableRecoveryDistance: true,
 };
 
 const SKILLS = {
@@ -75,8 +76,8 @@ const SKILLS = {
         enable: true,
         index: 1,
         range: 0.5,
-        hpThreshold: 0.6,
-        withMasochism: true
+        hpThreshold: 0.8,
+        withMasochism: false
     },
     heal_alternative: {
         enable: false,
@@ -279,7 +280,7 @@ const SCORE = {
          * HP threshold. Monsters with max HP above this level are avoided,
          * as they are considered too tough to handle, even if their rarity is low.
          */
-        rareMonsterHpThreshold: 40000,
+        rareMonsterHpThreshold: 9000,
     },
 
     resource: {
@@ -287,7 +288,7 @@ const SCORE = {
          * Base score for resources. Generally negative because resources are deprioritized 
          * compared to monsters, unless gathering resources is specifically required.
          */
-        baseScore: -20
+        baseScore: 0
     },
 
     proximity: {
@@ -1030,6 +1031,7 @@ const Finder = {
             // If the target is a resource
             if (dw.mdInfo[monster.md].isResource) {
                 score += SCORE.resource.baseScore; // Apply base score for resources
+                score += Array.from(dw.mdInfo[monster.md].tags || []).includes("wood") ? 30 : 0; // Apply base score for resources
                 score += Util.distanceToTarget(monster) * SCORE.proximity.distanceMultiplier; // Apply unified distance-based score adjustment
                 score += Util.checkMonsterNearby(monster) * SCORE.proximity.nearbyMonster; // Apply adjustment for nearby monsters
                 score += Util.countMonstersAlongPath(monster) * SCORE.path.monstersAlongPath; // Apply adjustment for monsters along the path
@@ -1204,7 +1206,7 @@ const Action = {
         }
 
         // Use melee attack or AOE if in range
-        if (distToTarget <= SKILLS.attack.range) {
+        if (distToTarget <= SKILLS.attack.range && !needRecovery) {
             let attackSkill = SKILLS.attack.index;
 
             // Use conservation skill if needed
