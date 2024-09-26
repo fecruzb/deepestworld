@@ -2,7 +2,7 @@ const IS_ACTIVE = true;
 dw.debug = true;
 let lastPosition = { x: dw.character.x, y: dw.character.y };
 let lastMoveTime = Date.now();
-let bestPathArray = []
+let bestTarget = null
 const visitedPositions = [];
 /**
  * Configuration constants used throughout the code.
@@ -18,25 +18,26 @@ const visitedPositions = [];
  * @property {number} monsterProximityRange - Radius to check the proximity of other monsters.
  */
 const SETTINGS = {
-    globalProximityToAction: 0.3,
+    globalProximityToAction: 0.4,
+    globalSafePositioning: 0.8,
     visionConeAngle: Math.PI * 1.15, 
     visionConeRadius: 3.2, 
     predictionTime: 3, 
     pathStepSize: 1,
-    maxPathfindingIterations: 700,
+    maxPathfindingIterations: 500,
     interpolationSteps: 100,
     gooProximityRange: 2,
     monsterProximityRange: 1.5,
     zoneLevelSuicide: 0,
     scoreLimit: -10,
-    idleTime: 15,
+    idleTime: 1005,
 };
 
 /**
  * Configuration flags for various behaviors
  */
 const CONFIG = {
-    exploreNewAreas: true,
+    exploreNewAreas: false,
     removeItems: true,
     combineItems: true,
     sortItems: true,
@@ -65,19 +66,26 @@ const SKILLS = {
         range: 0.7,
     },
     shield: {
-        enable: false,
+        enable: true,
         index: 2,
         range: 0.5,
         withBomb: true
     },
     heal: {
-        enable: false,
+        enable: true,
         index: 1,
         range: 0.5,
         hpThreshold: 0.6,
         withMasochism: true
     },
-   dash: {
+    heal_alternative: {
+        enable: false,
+        index: 1,
+        range: 0.5,
+        hpThreshold: 0.6,
+        withMasochism: false
+    },
+    dash: {
         enable: true,
         index: 3,
         range: 2.6,
@@ -133,7 +141,7 @@ const ITEMS = {
             "hpGain"
         ], // Mods to look for
         conditions: {
-            operator: "AND", // Operator for combining conditions
+            operator: "OR", // Operator for combining conditions
             conditions: [
                 { 
                     condition: "min_quantity", // Check for minimum number of mods
@@ -271,7 +279,7 @@ const SCORE = {
          * HP threshold. Monsters with max HP above this level are avoided,
          * as they are considered too tough to handle, even if their rarity is low.
          */
-        rareMonsterHpThreshold: 12000,
+        rareMonsterHpThreshold: 40000,
     },
 
     resource: {
@@ -610,138 +618,156 @@ const Util = {
         return totalDistance;
     },
 
-   /**
- * Generates a safe path from the character's position to a target position, avoiding monsters.
- * @param {Object} characterPos - The starting position (x, y).
- * @param {Object} targetPos - The target position (x, y, dx, dy) of the monster, including direction.
- * @returns {Array<Object>} The safe path as an array of positions (x, y).
- */
-generateSafePath(characterPos, targetPos) {
+    /**
+     * Calculates a safe position behind the target based on the direction it is moving.
+     * @param {Object} target - The target object (with x, y, dx, dy properties).
+     * @param {number} safeDistance - The distance to keep behind the target.
+     * @returns {Object} The new position { x, y } behind the target, maintaining the safe distance.
+     */
+    calculateSafePosition(target, distance, isBehind = true) {
+        const { x, y, dx = 0, dy = 0 } = target;
 
-    let adjustedTargetPos = targetPos
-    if(targetPos.md && dw.mdInfo[targetPos.md].isMonster && targetPos.bad > 0) {
-        // Garantir que estamos pegando o vetor direção correto (dx, dy)
-        const dx = targetPos.dx;
-        const dy = targetPos.dy;
+        // Ensure the direction vector (dx, dy) is valid
+        const magnitude = Math.sqrt(dx * dx + dy * dy); // Calculate the magnitude of the vector
 
-        // Normaliza o vetor de direção para evitar problemas com vetores grandes
-        const magnitude = Math.sqrt(dx * dx + dy * dy); // Calcular a magnitude
+        // If magnitude is 0, the target is stationary, so return the current position
+        if (magnitude === 0) {
+            return { x, y };
+        }
+
+        // Normalize the direction vector
         const normDx = dx / magnitude;
         const normDy = dy / magnitude;
 
-        // Calcula o ponto seguro a 0.5 unidades atrás do monstro
-         adjustedTargetPos = {
-            ...targetPos,
-            x: targetPos.x - normDx * SETTINGS.globalProximityToAction, // Move 0.5 unidades na direção oposta ao olhar
-            y: targetPos.y - normDy * SETTINGS.globalProximityToAction,
-        };
+        // If isBehind is true, move in the opposite direction; otherwise, move in the same direction
+        const multiplier = isBehind ? -1 : 1;
 
-    }
-    
-    // Checa se a distância entre o personagem e o target ajustado é menor que 0.7
-    if (dw.distance(characterPos.x, characterPos.y, adjustedTargetPos.x, adjustedTargetPos.y) < 1) {
-        return [characterPos, adjustedTargetPos];
-    }
+        // Calculate the new position by moving "distance" units relative to the target's movement
+        const newX = x + normDx * distance * multiplier;
+        const newY = y + normDy * distance * multiplier;
 
-    // Continua com o cálculo do caminho seguro
-    const openList = [];
-    const closedList = [];
-    const path = [];
-    const directions = [
-        { x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 },
-        { x: 1, y: 1 }, { x: -1, y: 1 }, { x: 1, y: -1 }, { x: -1, y: -1 }
-    ];
+        return { x: newX, y: newY };
+    },
 
-    let iterations = 0;
-
-    const startNode = new Node(characterPos, 0, dw.distance(characterPos.x, characterPos.y, adjustedTargetPos.x, adjustedTargetPos.y));
-    openList.push(startNode);
-
-    while (openList.length > 0) {
-        iterations++;
-        if (iterations > SETTINGS.maxPathfindingIterations) {
-            console.log("Iteration limit reached. Aborting!");
-            return path.reverse(); // Retorna o caminho gerado até aqui
-        }
-
-        // Seleciona o nó com o menor custo total (f)
-        let currentNode = openList.reduce((prev, node) => node.f < prev.f ? node : prev);
-
-        // Se o destino foi alcançado, constrói o caminho
-        if (dw.distance(currentNode.pos.x, currentNode.pos.y, adjustedTargetPos.x, adjustedTargetPos.y) <= SETTINGS.pathStepSize) {
-            let node = currentNode;
-            while (node) {
-                path.push(node.pos);
-                node = node.parent;
-            }
-            path.reverse(); // Retorna o caminho da origem ao destino
-
-            // Garante que o último ponto seja exatamente o targetPos ajustado
-            if (path.length === 0 || (path[path.length - 1].x !== adjustedTargetPos.x || path[path.length - 1].y !== adjustedTargetPos.y)) {
-                path.push(adjustedTargetPos); // Adiciona o ponto de destino ajustado se não estiver no caminho
-            }
-
-            return path;
-        }
-
-        // Remove o nó atual da lista aberta e o adiciona à lista fechada
-        openList.splice(openList.indexOf(currentNode), 1);
-        closedList.push(currentNode);
-
-        // Ordena as direções com base na proximidade ao alvo
-        const sortedDirections = directions.slice().sort((a, b) => {
-            const distA = dw.distance(
-                currentNode.pos.x + a.x * SETTINGS.pathStepSize,
-                currentNode.pos.y + a.y * SETTINGS.pathStepSize,
-                adjustedTargetPos.x,
-                adjustedTargetPos.y
-            );
-            const distB = dw.distance(
-                currentNode.pos.x + b.x * SETTINGS.pathStepSize,
-                currentNode.pos.y + b.y * SETTINGS.pathStepSize,
-                adjustedTargetPos.x,
-                adjustedTargetPos.y
-            );
-            return distA - distB; // Ordena da mais próxima para a mais distante
-        });
-
-        // Explora os nós vizinhos
-        for (const direction of sortedDirections) {
-            const newPos = {
-                x: currentNode.pos.x + direction.x * SETTINGS.pathStepSize,
-                y: currentNode.pos.y + direction.y * SETTINGS.pathStepSize
+    /**
+     * Generates a safe path from the character's position to a target position, avoiding monsters.
+     * @param {Object} characterPos - The starting position (x, y).
+     * @param {Object} targetPos - The target position (x, y, dx, dy) of the monster, including direction.
+     * @returns {Array<Object>} The safe path as an array of positions (x, y).
+     */
+    generateSafePath(characterPos, targetPos) {
+        let adjustedTargetPos = targetPos
+        if(targetPos.md && dw.mdInfo[targetPos.md].isMonster && targetPos.bad > 0) {
+            const safePosition = Util.calculateSafePosition(targetPos, SETTINGS.globalProximityToAction);
+            adjustedTargetPos = {
+                ...targetPos,
+                x: safePosition.x,
+                y: safePosition.y,
             };
+        }
+        
+        // Checa se a distância entre o personagem e o target ajustado é menor que 0.7
+        if (dw.distance(characterPos.x, characterPos.y, adjustedTargetPos.x, adjustedTargetPos.y) < 1) {
+            return [characterPos, adjustedTargetPos];
+        }
 
-            if (Util.isPathBlocked(newPos, currentNode.pos)) {
-                continue;
+        // Continua com o cálculo do caminho seguro
+        const openList = [];
+        const closedList = [];
+        const path = [];
+        const directions = [
+            { x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 },
+            { x: 1, y: 1 }, { x: -1, y: 1 }, { x: 1, y: -1 }, { x: -1, y: -1 }
+        ];
+
+        let iterations = 0;
+
+        const startNode = new Node(characterPos, 0, dw.distance(characterPos.x, characterPos.y, adjustedTargetPos.x, adjustedTargetPos.y));
+        openList.push(startNode);
+
+        while (openList.length > 0) {
+            iterations++;
+            if (iterations > SETTINGS.maxPathfindingIterations) {
+                console.log("Iteration limit reached. Aborting!");
+                return path.reverse(); // Retorna o caminho gerado até aqui
             }
 
-            // Verifica se o novo nó é seguro ou já foi explorado
-            if (!Util.isSafe(newPos) || closedList.find(node => node.pos.x === newPos.x && node.pos.y === newPos.y)) {
-                continue;
+            // Seleciona o nó com o menor custo total (f)
+            let currentNode = openList.reduce((prev, node) => node.f < prev.f ? node : prev);
+
+            // Se o destino foi alcançado, constrói o caminho
+            if (dw.distance(currentNode.pos.x, currentNode.pos.y, adjustedTargetPos.x, adjustedTargetPos.y) <= SETTINGS.pathStepSize) {
+                let node = currentNode;
+                while (node) {
+                    path.push(node.pos);
+                    node = node.parent;
+                }
+                path.reverse(); // Retorna o caminho da origem ao destino
+
+                // Garante que o último ponto seja exatamente o targetPos ajustado
+                if (path.length === 0 || (path[path.length - 1].x !== adjustedTargetPos.x || path[path.length - 1].y !== adjustedTargetPos.y)) {
+                    path.push(adjustedTargetPos); // Adiciona o ponto de destino ajustado se não estiver no caminho
+                }
+
+                return path;
             }
 
-            const gScore = currentNode.g + SETTINGS.pathStepSize;
-            let neighborNode = openList.find(node => node.pos.x === newPos.x && node.pos.y === newPos.y);
+            // Remove o nó atual da lista aberta e o adiciona à lista fechada
+            openList.splice(openList.indexOf(currentNode), 1);
+            closedList.push(currentNode);
 
-            // Se o nó vizinho não está na lista aberta, ou se o novo caminho é mais barato
-            if (!neighborNode) {
-                const hScore = dw.distance(newPos.x, newPos.y, adjustedTargetPos.x, adjustedTargetPos.y);
-                neighborNode = new Node(newPos, gScore, hScore, currentNode);
-                openList.push(neighborNode);
-            } else if (gScore < neighborNode.g) {
-                neighborNode.g = gScore;
-                neighborNode.f = gScore + neighborNode.h;
-                neighborNode.parent = currentNode;
+            // Ordena as direções com base na proximidade ao alvo
+            const sortedDirections = directions.slice().sort((a, b) => {
+                const distA = dw.distance(
+                    currentNode.pos.x + a.x * SETTINGS.pathStepSize,
+                    currentNode.pos.y + a.y * SETTINGS.pathStepSize,
+                    adjustedTargetPos.x,
+                    adjustedTargetPos.y
+                );
+                const distB = dw.distance(
+                    currentNode.pos.x + b.x * SETTINGS.pathStepSize,
+                    currentNode.pos.y + b.y * SETTINGS.pathStepSize,
+                    adjustedTargetPos.x,
+                    adjustedTargetPos.y
+                );
+                return distA - distB; // Ordena da mais próxima para a mais distante
+            });
+
+            // Explora os nós vizinhos
+            for (const direction of sortedDirections) {
+                const newPos = {
+                    x: currentNode.pos.x + direction.x * SETTINGS.pathStepSize,
+                    y: currentNode.pos.y + direction.y * SETTINGS.pathStepSize
+                };
+
+                if (Util.isPathBlocked(newPos, currentNode.pos)) {
+                    continue;
+                }
+
+                // Verifica se o novo nó é seguro ou já foi explorado
+                if (!Util.isSafe(newPos) || closedList.find(node => node.pos.x === newPos.x && node.pos.y === newPos.y)) {
+                    continue;
+                }
+
+                const gScore = currentNode.g + SETTINGS.pathStepSize;
+                let neighborNode = openList.find(node => node.pos.x === newPos.x && node.pos.y === newPos.y);
+
+                // Se o nó vizinho não está na lista aberta, ou se o novo caminho é mais barato
+                if (!neighborNode) {
+                    const hScore = dw.distance(newPos.x, newPos.y, adjustedTargetPos.x, adjustedTargetPos.y);
+                    neighborNode = new Node(newPos, gScore, hScore, currentNode);
+                    openList.push(neighborNode);
+                } else if (gScore < neighborNode.g) {
+                    neighborNode.g = gScore;
+                    neighborNode.f = gScore + neighborNode.h;
+                    neighborNode.parent = currentNode;
+                }
             }
         }
-    }
 
-    console.log("No path found.");
-    return path; // Retorna o caminho gerado até o momento ou vazio se nenhum caminho foi encontrado
-},
-
-
+        console.log("No path found.");
+        return path; // Retorna o caminho gerado até o momento ou vazio se nenhum caminho foi encontrado
+    },
 
     /**
      * Optimizes a given path by skipping over safe segments, minimizing the number of points in the path.
@@ -1041,7 +1067,7 @@ const Finder = {
 
 
         if (target) {
-            bestPathArray = target.path
+            bestTarget = target
             return { 
                 ...target?.monster,
                 path: target.path,
@@ -1051,7 +1077,7 @@ const Finder = {
             };
         }
         
-        bestPathArray = []
+        bestTarget = null
         return null;
     },
 };
@@ -1117,6 +1143,24 @@ const Action = {
     },
 
     /**
+     * Uses the heal skill if conditions are met (not casting, not being attacked, skill enabled, HP below a threshold).
+     */
+    useHealAlternativeSkill() {
+        if (
+            (!Character.hasMasochism() && SKILLS.heal_alternative.withMasochism) &&
+            !Character.isCasting() &&
+            !Character.isBeingAttacked() &&
+            SKILLS.heal_alternative.enable &&
+            Character.isHpBelowPercentage(SKILLS.heal_alternative.hpThreshold)
+        ) {
+            if (dw.canUseSkill(SKILLS.heal_alternative.index, dw.character.id)) {
+                DEBUG.log(`Using <span style="color: hotpink">Alt Heal</span>. Life below <span style="color: pink">${SKILLS.heal_alternative.hpThreshold * 100}%</span>`);
+                dw.useSkill(SKILLS.heal_alternative.index, dw.character.id);
+            }
+        }
+    },
+
+    /**
      * Determines if an AOE skill should be used based on the number of monsters in range.
      * @param {number} x - X-coordinate of the center of the AOE.
      * @param {number} y - Y-coordinate of the center of the AOE.
@@ -1150,7 +1194,7 @@ const Action = {
      * @param {Object} target - The target to attack.
      * @param {number} [skillRange=0.75] - The range at which to use melee skills.
      */
-    followAndAttack(target) {
+    followAndAttack(target, needRecovery = false) {
         dw.setTarget(target.id);
         const distToTarget = Util.distanceToTarget(target);
 
@@ -1185,7 +1229,15 @@ const Action = {
                 dw.useSkill(attackSkill, target.id);
             }
         } else {
-            Movement.moveCloserToTarget(target)
+            if(needRecovery) {
+                DEBUG.log("Waiting full recovery but approaching.")
+                // Move not so close to target
+                Movement.moveCloserToTarget(target, SETTINGS.globalSafePositioning)
+            }
+            // Move closer to targer
+            else {
+                Movement.moveCloserToTarget(target)
+            }
         }
     },
 
@@ -1249,21 +1301,31 @@ const Movement = {
      * Moves the character closer to the target using either a path or direct movement.
      * @param {Object} target - The target object (e.g., monster) to move toward.
      */
-    moveCloserToTarget(target) {
+    moveCloserToTarget(target, safeDistance = 0) {
+        let { x, y, dx, dy } = target
+
+        
         if (target?.path) {
-            const nextPosition = target.path[1];
+            DEBUG.log(`<span style="color: lime">Pathfinding</span> to <span style="color: cyan">${dw.mdInfo[target.md].name}</span>`);
+            x = target.path[1].x
+            y = target.path[1].y
             if(dw.mdInfo[target.md].isMonster) {
                 Movement.getCloserPath(target.path);
             }
-            dw.move(nextPosition.x, nextPosition.y);
-            DEBUG.log(`<span style="color: lime">Pathfinding</span> to <span style="color: cyan">${dw.mdInfo[target.md].name}</span>`);
         } else {
+            DEBUG.log(`<span style="color: lime">Moving</span> to <span style="color: cyan">${dw.mdInfo[target.md].name}</span>`);
             if(dw.mdInfo[target.md].isMonster) {
                 Movement.getCloserMove(target);
             }
-            dw.move(target.x, target.y);
-            DEBUG.log(`<span style="color: lime">Moving</span> to <span style="color: cyan">${dw.mdInfo[target.md].name}</span>`);
         }
+
+        if(safeDistance !== 0) {
+            DEBUG.log(`<span style="color: lime">Safe Positioning</span> to <span style="color: cyan">${dw.mdInfo[target.md].name}</span>`);
+            const safePoint = Util.calculateSafePosition({ ...target, x, y}, safeDistance)
+            x = safePoint.x
+            y = safePoint.y
+        }
+        dw.move(x, y);
     },
 
     /**
@@ -1433,7 +1495,7 @@ const Movement = {
     updatePathfinder() {
         const monsterFinder = Finder.getMonstersByScore() || [];
         if (monsterFinder.length > 0) {
-            bestPathArray = Movement.findPath(monsterFinder[0].monster); // Generate the safest path to the monster
+            bestTarget = Movement.findPath(monsterFinder[0].monster); // Generate the safest path to the monster
         }
     },
 
@@ -1643,35 +1705,30 @@ const Misc = {
         // Check if the item has at least a certain number of mods from the mod list
         min_quantity: (item, condition, mods) => {
             const modCount = Misc.countModsFromList(item, mods);
-            console.log(`Checking min_quantity: ${modCount} >= ${condition.value}`);
             return modCount >= condition.value;
         },
 
         // Check if the item has at least one mod from the list with a value greater than or equal to the threshold
         min_quality: (item, condition, mods) => {
             const hasModWithQuality = Misc.hasModWithMinQuality(item, mods, condition.value);
-            console.log(`Checking min_quality: found mod >= ${condition.value}`);
             return hasModWithQuality;
         },
 
         // Check if the sum of the mod values from the list is greater than or equal to the threshold
         min_sum_quality: (item, condition, mods) => {
             const totalModQuality = Misc.sumModQualityFromList(item, mods);
-            console.log(`Checking min_sum_quality: ${totalModQuality} >= ${condition.value}`);
             return totalModQuality >= condition.value;
         },
 
         // Check if the sum of the mod values from the list is greater than or equal to the threshold
         min_sum_quality_total: (item, condition) => {
             const totalModQuality = Misc.sumModQuality(item);
-            console.log(`Checking sum of any mods: ${totalModQuality} >= ${condition.value}`);
             return totalModQuality >= condition.value;
         },
 
         // Check if the item has at least a certain number of sockets
         min_socket: (item, condition) => {
             const socketCount = Misc.countSockets(item);
-            console.log(`Checking min_socket: ${socketCount} >= ${condition.value}`);
             return socketCount >= condition.value;
         }
     },
@@ -1706,9 +1763,7 @@ cleanInventory() {
     const itemsToRemove = [];
 
     // Helper function to log evaluation results
-    const logEvaluation = (item, result, message) => {
-        console.log(`Item [${item.md}] - ${result ? 'Kept' : 'Removed'}: ${message}`);
-    };
+    const logEvaluation = (item, result, message) => {};
 
     // Helper function to log exclusion with colored mods
     const logExclusion = (item, mods, reason) => {
@@ -1738,7 +1793,6 @@ cleanInventory() {
         const tags = Array.from(dw.mdInfo[item.md]?.tags || []) || [];
 
         // Log item type and mod details
-        console.log(`Evaluating item [${item.md}] - Mods: ${mods.join(', ')}`);
 
         // Check if any mod matches the global mods_to_keep list
         const hasGlobalKeepMod = mods.some(mod => ITEMS.global.mods_to_keep.includes(mod));
@@ -1851,7 +1905,6 @@ cleanInventory() {
 };
 
 
-
 /**
  * Event handling and game loop
  */
@@ -1861,6 +1914,7 @@ const eventPriority = [
     Movement.checkZoneLevel,
     Misc.cleanInventory,
     Action.useHealSkill,
+    Action.useHealAlternativeSkill,
     Action.useGraftSkill,
     Action.useShieldSkill,
     Finder.getNearestToTaunt,
@@ -1881,15 +1935,10 @@ function handleGameEvents() {
         if (!target) continue;
 
         const attackers = Finder.getEntities().filter(e => e.targetId === dw.character.id && dw.mdInfo[e.md]?.isMonster);
-
-        // // Wait if cooldowns are still active or HP is below max
-        // if (target.toAttack && attackers.length === 0 && (dw.character.hp !== dw.character.maxHp)) {
-        //     if(!Movement.exploreNewAreas()) {
-        //         DEBUG.log("Waiting...");
-        //         dw.stop();
-        //     }
-        //     return;
-        // }
+        const needRecovery = CONFIG.enableRecoveryDistance && 
+                                        target.toAttack && 
+                                        attackers.length === 0 && 
+                                        (dw.character.hp !== dw.character.maxHp)
 
         // Handle skill-based actions
         if (target.toSkill >= 0) {
@@ -1897,8 +1946,7 @@ function handleGameEvents() {
         }
         // Handle attack actions
         else if (target.toAttack) {
-            console.log("attack", target)
-            Action.followAndAttack(target);
+            Action.followAndAttack(target, needRecovery);
         }
         // Handle gathering actions
         else if (target.toGather) {
@@ -1925,6 +1973,34 @@ function gameLoop() {
 gameLoop();
 
 dw.on('drawUnder', (ctx) => {
+    function drawArrow(fromX, fromY, toX, toY) {
+    const headLength = 15; // Tamanho da cabeça da seta
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const angle = Math.atan2(dy, dx); // Calcula o ângulo da linha
+
+    // Desenha a linha da seta (corpo)
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.lineTo(toX, toY);
+    ctx.stroke(); // Necessário para desenhar a linha
+
+    // Desenha a "cabeça" da seta
+    ctx.beginPath();
+    ctx.moveTo(toX, toY);
+    ctx.lineTo(
+        toX - headLength * Math.cos(angle - Math.PI / 6),
+        toY - headLength * Math.sin(angle - Math.PI / 6)
+    );
+    ctx.lineTo(
+        toX - headLength * Math.cos(angle + Math.PI / 6),
+        toY - headLength * Math.sin(angle + Math.PI / 6)
+    );
+    ctx.lineTo(toX, toY); // Fecha a cabeça da seta
+    ctx.stroke(); // Necessário para desenhar a cabeça da seta
+}
+
+
     const monsterFinder = Finder.getMonstersByScore(e => dw.mdInfo[e.md]?.isMonster) || [];
 
     // Get character's canvas coordinates
@@ -2073,6 +2149,9 @@ dw.on('drawUnder', (ctx) => {
         const monsterX1 = dw.toCanvasX(monster1.x);
         const monsterY1 = dw.toCanvasY(monster1.y);
 
+
+    
+
         for (let j = i + 1; j < monsterFinder.length; j++) {
             const monster2 = monsterFinder[j].monster;
             const monsterX2 = dw.toCanvasX(monster2.x);
@@ -2098,44 +2177,40 @@ dw.on('drawUnder', (ctx) => {
                 ctx.fillText(`${distanceBetweenMonsters.toFixed(2)}`, midX, midY);
             }
         }
+
+         // Calcula a posição atrás do monstro
+        const safePosition = Util.calculateSafePosition(monster1, SETTINGS.globalSafePositioning, true); // Posição atrás
+
+        // Calcula a posição na frente do monstro
+        const frontPosition = Util.calculateSafePosition(monster1, SETTINGS.globalSafePositioning, false); // Posição à frente
+
+        // Desenha um ponto na posição do monstro (opcional)
+        ctx.beginPath();
+        ctx.strokeStyle = 'blue';
+        ctx.lineWidth = 6
+
+            // Desenha uma seta atrás do monstro (posição segura)
+        drawArrow(dw.toCanvasX(safePosition.x), dw.toCanvasY(safePosition.y), monsterX1, monsterY1);
+
+        // Desenha uma seta na frente do monstro (na direção do movimento)
+        drawArrow(monsterX1, monsterY1, dw.toCanvasX(frontPosition.x), dw.toCanvasY(frontPosition.y));
     }
-     if (bestPathArray?.length > 0) {
+
+     if (bestTarget && bestTarget?.path?.length > 0) {
         ctx.strokeStyle = "purple"; // Define line color
         ctx.lineWidth = 5; // Line width based on path step size from SETTINGS
 
         // Função auxiliar para desenhar uma seta entre dois pontos
-        function drawArrow(fromX, fromY, toX, toY) {
-            const headLength = 15; // Tamanho da "cabeça" da seta
-            const dx = toX - fromX;
-            const dy = toY - fromY;
-            const angle = Math.atan2(dy, dx); // Calcula o ângulo da linha
-
-            // Desenha a linha da seta
-            ctx.moveTo(fromX, fromY);
-            ctx.lineTo(toX, toY);
-
-            // Desenha a "cabeça" da seta
-            ctx.lineTo(
-                toX - headLength * Math.cos(angle - Math.PI / 6),
-                toY - headLength * Math.sin(angle - Math.PI / 6)
-            );
-            ctx.moveTo(toX, toY);
-            ctx.lineTo(
-                toX - headLength * Math.cos(angle + Math.PI / 6),
-                toY - headLength * Math.sin(angle + Math.PI / 6)
-            );
-        }
-
         ctx.beginPath();
 
         // Convert the first position of the path and start drawing
-        let prevX = dw.toCanvasX(bestPathArray[0].x);
-        let prevY = dw.toCanvasY(bestPathArray[0].y);
+        let prevX = dw.toCanvasX(bestTarget.path[0].x);
+        let prevY = dw.toCanvasY(bestTarget.path[0].y);
 
         // Draw arrows between all points on the path
-        for (let i = 1; i < bestPathArray.length; i++) {
-            let currentX = dw.toCanvasX(bestPathArray[i].x);
-            let currentY = dw.toCanvasY(bestPathArray[i].y);
+        for (let i = 1; i < bestTarget.path.length; i++) {
+            let currentX = dw.toCanvasX(bestTarget.path[i].x);
+            let currentY = dw.toCanvasY(bestTarget.path[i].y);
             
             drawArrow(prevX, prevY, currentX, currentY); // Desenha a seta
 
@@ -2147,4 +2222,5 @@ dw.on('drawUnder', (ctx) => {
         // Finish drawing the path with arrows
         ctx.stroke();
     }
+
 });
