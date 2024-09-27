@@ -18,8 +18,8 @@ const visitedPositions = [];
  * @property {number} monsterProximityRange - Radius to check the proximity of other monsters.
  */
 const SETTINGS = {
-    globalProximityToAction: 0.2,
-    globalSafePositioning: 0.5,
+    globalProximityToAction: 0,
+    globalSafePositioning: 0,
     visionConeAngle: Math.PI * 1.15, 
     visionConeRadius: 3.2, 
     predictionTime: 1, 
@@ -2068,9 +2068,8 @@ function handleGameEvents() {
         else if (target.toGather) {
             Movement.moveAndGather(target);
         }
-        else {
-            console.log(target)
-            Movement.moveCloserToTarget(target)
+        else if (dw.mdInfo[target.md].isStation) {            
+            dw.move(target.x, target.y)
         }
         return; // Stop processing further events after acting on the current one
     }
