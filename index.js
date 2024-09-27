@@ -1320,21 +1320,21 @@ const Movement = {
 
         
         if (target?.path) {
-            DEBUG.log(`<span style="color: lime">Pathfinding</span> to <span style="color: cyan">${dw.mdInfo[target.md].name}</span>`);
+            DEBUG.log(`<span style="color: lime">Pathfinding</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
             x = target.path[1].x
             y = target.path[1].y
             if(dw.mdInfo[target.md].isMonster) {
                 Movement.getCloserPath(target.path);
             }
         } else {
-            DEBUG.log(`<span style="color: lime">Moving</span> to <span style="color: cyan">${dw.mdInfo[target.md].name}</span>`);
+            DEBUG.log(`<span style="color: lime">Moving</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
             if(dw.mdInfo[target.md].isMonster) {
                 Movement.getCloserMove(target);
             }
         }
 
         if(safeDistance !== 0) {
-            DEBUG.log(`<span style="color: lime">Safe Positioning</span> to <span style="color: cyan">${dw.mdInfo[target.md].name}</span>`);
+            DEBUG.log(`<span style="color: lime">Safe Positioning</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
             const safePoint = Util.calculateSafePosition({ ...target, x, y}, safeDistance)
             x = safePoint.x
             y = safePoint.y
@@ -2069,6 +2069,7 @@ function handleGameEvents() {
             Movement.moveAndGather(target);
         }
         else {
+            console.log(target)
             Movement.moveCloserToTarget(target)
         }
         return; // Stop processing further events after acting on the current one
