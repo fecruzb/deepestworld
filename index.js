@@ -18,16 +18,16 @@ const visitedPositions = [];
  * @property {number} monsterProximityRange - Radius to check the proximity of other monsters.
  */
 const SETTINGS = {
-    globalProximityToAction: 0.4,
-    globalSafePositioning: 0.8,
+    globalProximityToAction: 0.2,
+    globalSafePositioning: 0.5,
     visionConeAngle: Math.PI * 1.15, 
     visionConeRadius: 3.2, 
-    predictionTime: 3, 
+    predictionTime: 1, 
     pathStepSize: 1,
     maxPathfindingIterations: 500,
     interpolationSteps: 100,
     gooProximityRange: 2,
-    monsterProximityRange: 1.5,
+    monsterProximityRange: 1,
     zoneLevelSuicide: 0,
     scoreLimit: -10,
     idleTime: 1005,
@@ -37,9 +37,10 @@ const SETTINGS = {
  * Configuration flags for various behaviors
  */
 const CONFIG = {
-    exploreNewAreas: false,
-    removeItems: true,
+    exploreNewAreas: true,
+    removeItems: false,
     combineItems: true,
+    recycleItems: true,
     sortItems: true,
     suicideAtZoneLevel: true,
     suicideUnderground: true,
@@ -52,7 +53,7 @@ const CONFIG = {
     healAndFollowAllied: false,
     enableTeleport: true,
     moveToShrub: false,
-    enableRecoveryDistance: true,
+    enableRecoveryDistance: false,
 };
 
 const SKILLS = {
@@ -76,7 +77,7 @@ const SKILLS = {
         enable: true,
         index: 1,
         range: 0.5,
-        hpThreshold: 0.8,
+        hpThreshold: 0.95,
         withMasochism: false
     },
     heal_alternative: {
@@ -95,9 +96,9 @@ const SKILLS = {
     teleport: {
         enable: true,
         index: 4,
-        range: 5,
+        range: 4.6,
         minRange: 3,
-        minSavedRange: 1.75
+        minSavedRange: 1.5
     },
     graft: {
         enable: false,
@@ -131,7 +132,7 @@ const ITEMS = {
     global: {
         min_any_mod_quantity: 4, // Any mod with quality 8 or above should be kept
         min_any_mod_quality: 10, // Any mod with quality 8 or above should be kept
-        mods_to_keep: ["masochism", "physborn", "fireborn"], // List of mods that will keep the item regardless of other conditions
+        mods_to_keep: ["masochism", "physborn", "fireborn", "physBorn", "fireBorn", "dmg", "dmgMore", "blink", " blessing"], // List of mods that will keep the item regardless of other conditions
         tags_to_keep: [],
         mds_to_keep: []
     },
@@ -142,7 +143,7 @@ const ITEMS = {
             "hpGain"
         ], // Mods to look for
         conditions: {
-            operator: "OR", // Operator for combining conditions
+            operator: "AND", // Operator for combining conditions
             conditions: [
                 { 
                     condition: "min_quantity", // Check for minimum number of mods
@@ -211,7 +212,7 @@ const ITEMS = {
         }
     },
     passive: {
-        mods: ["hpInc", "hpRegenInc", "gcdr", "physDmgInc", "dmg", "dmgInc", "physDmg"], // Mods to look for
+        mods: ["hpInc", "hpRegenInc", "gcdr", "physDmgInc", "dmg", "dmgInc", "physDmg", "crit"], // Mods to look for
         conditions: {
             operator: "OR",
             conditions: [
@@ -280,7 +281,7 @@ const SCORE = {
          * HP threshold. Monsters with max HP above this level are avoided,
          * as they are considered too tough to handle, even if their rarity is low.
          */
-        rareMonsterHpThreshold: 9000,
+        rareMonsterHpThreshold: 30000,
     },
 
     resource: {
@@ -304,7 +305,7 @@ const SCORE = {
          * This penalty is applied for EACH nearby monster, encouraging prioritization of
          * safer fights with fewer monsters in close proximity.
          */
-        nearbyMonster: -20,
+        nearbyMonster: -30,
 
         /**
          * Distance-based multiplier that reduces the score based on the distance to the target.
@@ -343,30 +344,8 @@ const SCORE = {
     }
 };
 
-const protectList = [];
+const protectList = ["Fireling"];
 const healList = [];
-
-/**
- * Represents a node in the pathfinding algorithm.
- * @class
- */
-class Node {
-    /**
-     * Creates an instance of a Node.
-     * @param {Object} pos - The current position (x, y).
-     * @param {number} g - The cost from the start to this node.
-     * @param {number} h - The heuristic (estimated cost to the destination).
-     * @param {Node|null} [parent=null] - The parent node in the path.
-     */
-    constructor(pos, g, h, parent = null) {
-        this.pos = pos; // Current position (x, y)
-        this.g = g; // Cost from the start to this point
-        this.h = h; // Heuristic (estimated cost to the destination)
-        this.f = g + h; // Total cost f = g + h
-        this.parent = parent; // Previous node in the path
-    }
-}
-
 
 const DEBUG = {
     lastMessage: null,
@@ -657,7 +636,8 @@ const Util = {
      * @returns {Array<Object>} The safe path as an array of positions (x, y).
      */
     generateSafePath(characterPos, targetPos) {
-        let adjustedTargetPos = targetPos
+
+        let adjustedTargetPos = targetPos;
         if(targetPos.md && dw.mdInfo[targetPos.md].isMonster && targetPos.bad > 0) {
             const safePosition = Util.calculateSafePosition(targetPos, SETTINGS.globalProximityToAction);
             adjustedTargetPos = {
@@ -667,12 +647,11 @@ const Util = {
             };
         }
         
-        // Checa se a distância entre o personagem e o target ajustado é menor que 0.7
+        // Check if the distance between character and adjusted target is less than 1
         if (dw.distance(characterPos.x, characterPos.y, adjustedTargetPos.x, adjustedTargetPos.y) < 1) {
             return [characterPos, adjustedTargetPos];
         }
 
-        // Continua com o cálculo do caminho seguro
         const openList = [];
         const closedList = [];
         const path = [];
@@ -683,41 +662,48 @@ const Util = {
 
         let iterations = 0;
 
-        const startNode = new Node(characterPos, 0, dw.distance(characterPos.x, characterPos.y, adjustedTargetPos.x, adjustedTargetPos.y));
+        // Create start node as a plain object
+        const startNode = {
+            pos: characterPos,
+            g: 0,
+            h: dw.distance(characterPos.x, characterPos.y, adjustedTargetPos.x, adjustedTargetPos.y),
+            f: dw.distance(characterPos.x, characterPos.y, adjustedTargetPos.x, adjustedTargetPos.y),
+            parent: null
+        };
         openList.push(startNode);
 
         while (openList.length > 0) {
             iterations++;
             if (iterations > SETTINGS.maxPathfindingIterations) {
                 console.log("Iteration limit reached. Aborting!");
-                return path.reverse(); // Retorna o caminho gerado até aqui
+                return path.reverse(); // Return the path generated so far
             }
 
-            // Seleciona o nó com o menor custo total (f)
+            // Select the node with the lowest total cost (f)
             let currentNode = openList.reduce((prev, node) => node.f < prev.f ? node : prev);
 
-            // Se o destino foi alcançado, constrói o caminho
+            // If the destination is reached, build the path
             if (dw.distance(currentNode.pos.x, currentNode.pos.y, adjustedTargetPos.x, adjustedTargetPos.y) <= SETTINGS.pathStepSize) {
                 let node = currentNode;
                 while (node) {
                     path.push(node.pos);
                     node = node.parent;
                 }
-                path.reverse(); // Retorna o caminho da origem ao destino
+                path.reverse(); // Return the path from origin to destination
 
-                // Garante que o último ponto seja exatamente o targetPos ajustado
+                // Ensure the last point is exactly the adjusted target position
                 if (path.length === 0 || (path[path.length - 1].x !== adjustedTargetPos.x || path[path.length - 1].y !== adjustedTargetPos.y)) {
-                    path.push(adjustedTargetPos); // Adiciona o ponto de destino ajustado se não estiver no caminho
+                    path.push(adjustedTargetPos); // Add adjusted destination point if not in path
                 }
 
                 return path;
             }
 
-            // Remove o nó atual da lista aberta e o adiciona à lista fechada
+            // Remove the current node from the open list and add it to the closed list
             openList.splice(openList.indexOf(currentNode), 1);
             closedList.push(currentNode);
 
-            // Ordena as direções com base na proximidade ao alvo
+            // Sort directions based on proximity to the target
             const sortedDirections = directions.slice().sort((a, b) => {
                 const distA = dw.distance(
                     currentNode.pos.x + a.x * SETTINGS.pathStepSize,
@@ -731,10 +717,10 @@ const Util = {
                     adjustedTargetPos.x,
                     adjustedTargetPos.y
                 );
-                return distA - distB; // Ordena da mais próxima para a mais distante
+                return distA - distB; // Sort from closest to farthest
             });
 
-            // Explora os nós vizinhos
+            // Explore neighboring nodes
             for (const direction of sortedDirections) {
                 const newPos = {
                     x: currentNode.pos.x + direction.x * SETTINGS.pathStepSize,
@@ -745,7 +731,7 @@ const Util = {
                     continue;
                 }
 
-                // Verifica se o novo nó é seguro ou já foi explorado
+                // Check if the new node is safe or already explored
                 if (!Util.isSafe(newPos) || closedList.find(node => node.pos.x === newPos.x && node.pos.y === newPos.y)) {
                     continue;
                 }
@@ -753,10 +739,16 @@ const Util = {
                 const gScore = currentNode.g + SETTINGS.pathStepSize;
                 let neighborNode = openList.find(node => node.pos.x === newPos.x && node.pos.y === newPos.y);
 
-                // Se o nó vizinho não está na lista aberta, ou se o novo caminho é mais barato
+                // If the neighbor is not in the open list, or the new path is cheaper
                 if (!neighborNode) {
                     const hScore = dw.distance(newPos.x, newPos.y, adjustedTargetPos.x, adjustedTargetPos.y);
-                    neighborNode = new Node(newPos, gScore, hScore, currentNode);
+                    neighborNode = {
+                        pos: newPos,
+                        g: gScore,
+                        h: hScore,
+                        f: gScore + hScore,
+                        parent: currentNode
+                    };
                     openList.push(neighborNode);
                 } else if (gScore < neighborNode.g) {
                     neighborNode.g = gScore;
@@ -767,8 +759,9 @@ const Util = {
         }
 
         console.log("No path found.");
-        return path; // Retorna o caminho gerado até o momento ou vazio se nenhum caminho foi encontrado
+        return path; // Return the path generated so far or empty if no path was found
     },
+
 
     /**
      * Optimizes a given path by skipping over safe segments, minimizing the number of points in the path.
@@ -914,9 +907,11 @@ const Finder = {
             entity => 
                 (
                     dw.mdInfo[entity.md]?.isMonster || 
-                    dw.mdInfo[entity.md]?.isResource
+                    dw.mdInfo[entity.md]?.isResource ||
+                    (dw.mdInfo[entity.md]?.type === "recycler" && entity.owner)
                 ) && 
-                !entity.isSafe
+                !entity.isSafe &&
+                !dw.mdInfo[entity.md]?.canHunt
         );
     },
 
@@ -994,19 +989,34 @@ const Finder = {
 
         return monsters.map(monster => {
             let score = 0;
-
+            
+            if(dw.mdInfo[monster.md].isStation) {
+                const inventory = Misc.mapInventory()
+                if(inventory?.remove?.length > 0 || monster?.output.filter(e => e !== null)?.length >= 1 || monster?.powerOn !== 0)
+                    score += 50
+                else 
+                    score -= 1000
+            }
+           
             // If the target is a monster
             if (dw.mdInfo[monster.md].isMonster) {
+
+                // to taunt
+                if(Finder.getFollowCharacters().includes(monster.targetId)) {
+                    score += SCORE.monster.targetCharacterBonus + 100
+                }
+
                 score += SCORE.monster.baseScore; // Apply base score for monsters
                 if (monster.hp < monster.maxHp) {
                     score += SCORE.monster.injuredBonus; // Apply bonus if the monster is injured
                 }
                 score += Util.checkGooProximity(monster) * SCORE.proximity.goo; // Apply goo proximity adjustment
                 score += Util.checkMonsterNearby(monster) * SCORE.proximity.nearbyMonster; // Apply adjustment for nearby monsters
-                if ([dw.character.id, ...Finder.getFollowCharacters()].includes(monster.targetId)) {
+                if ([dw.character.id].includes(monster.targetId)) {
                     score += SCORE.monster.targetCharacterBonus; // Apply bonus if the monster is targeting the character
                 }
                 score += Util.distanceToTarget(monster) * SCORE.proximity.distanceMultiplier; // Apply unified distance-based score adjustment
+
 
                 // Apply rare monster score
                 if (monster.r > 0) {
@@ -1031,7 +1041,7 @@ const Finder = {
             // If the target is a resource
             if (dw.mdInfo[monster.md].isResource) {
                 score += SCORE.resource.baseScore; // Apply base score for resources
-                score += Array.from(dw.mdInfo[monster.md].tags || []).includes("wood") ? 30 : 0; // Apply base score for resources
+                score += Array.from(dw.mdInfo[monster.md].tags || []).includes("wood") ? 5 : 0; // Apply base score for resources
                 score += Util.distanceToTarget(monster) * SCORE.proximity.distanceMultiplier; // Apply unified distance-based score adjustment
                 score += Util.checkMonsterNearby(monster) * SCORE.proximity.nearbyMonster; // Apply adjustment for nearby monsters
                 score += Util.countMonstersAlongPath(monster) * SCORE.path.monstersAlongPath; // Apply adjustment for monsters along the path
@@ -1053,7 +1063,7 @@ const Finder = {
         // iterate to find a monster with path
         // find first mosnter with path and return the monster and the path
         const target = monsters?.find(m => {
-            if(m.monster.targetId === dw.c.id) {
+            if(m.monster.targetId === dw.c.id || Finder.getFollowCharacters().includes(m.monster.targetId)) {
                 return true
             }
             
@@ -1075,7 +1085,8 @@ const Finder = {
                 path: target.path,
                 score: target.score, 
                 toAttack: dw.mdInfo[target?.monster?.md]?.isMonster,
-                toGather: dw.mdInfo[target?.monster?.md]?.isResource
+                toGather: dw.mdInfo[target?.monster?.md]?.isResource,
+                toTaunt: Finder.getFollowCharacters().includes(target.monster.targetId)
             };
         }
         
@@ -1131,7 +1142,7 @@ const Action = {
      */
     useHealSkill() {
         if (
-            (!Character.hasMasochism() && SKILLS.heal.withMasochism) &&
+            (SKILLS.heal.withMasochism ? !Character.hasMasochism() : true) && 
             !Character.isCasting() &&
             !Character.isBeingAttacked() &&
             SKILLS.heal.enable &&
@@ -1214,7 +1225,7 @@ const Action = {
                 attackSkill = SKILLS.conservation.index;
             }
 
-            if(SKILLS.attack_exertion.enable && target.r > 0) {
+            if(SKILLS.attack_exertion.enable && target.r > 0 && target.hp === target.maxHp) {
                 attackSkill = SKILLS.attack_exertion.index
             }
 
@@ -1250,6 +1261,7 @@ const Action = {
      */
     followAndUseSkill(target, skill) {
         dw.setTarget(target.id);
+        console.log("hm")
         if (dw.canUseSkill(skill, target.id)) {
             dw.move(target.x, target.y);
             dw.useSkill(skill, target.id);
@@ -1326,8 +1338,19 @@ const Movement = {
             const safePoint = Util.calculateSafePosition({ ...target, x, y}, safeDistance)
             x = safePoint.x
             y = safePoint.y
+
+            if(Util.distanceToTarget({ x, y}) <= safeDistance) {
+                dw.stop()
+            }
+            else {
+                dw.move(x,y)
+            }
+
         }
-        dw.move(x, y);
+        else {
+            dw.move(x, y);
+        }
+
     },
 
     /**
@@ -1755,154 +1778,241 @@ const Misc = {
         return false; // Default to false if the operator is not recognized
     },
 
+    
+    getRecycler() {
+         return dw.findEntities((e) =>
+            e.owner && 
+            e.md.includes("recycler") && 
+            dw.distance(e, dw.c) < 2).shift()
+    },
+
+    getRecyclerSpotToMove() {
+        const recycler = Misc.getRecycler()
+        if(!recycler) return false
+        return {
+            id: recycler.id,
+            index: recycler.storage.findIndex(e => e === null)
+        }
+    },
+
+    getRecyclerSpotToExtract() {
+        const recycler = Misc.getRecycler()
+        if(!recycler) return false
+        return {
+            id: recycler.id,
+            index: recycler.output.findIndex(e => e !== null)
+        }
+    },
+
+    getBagSpotToExtract() {
+        return {
+            index: dw.c.bag.findIndex(e => e === null)
+        }
+    },
+
+    recycleItem(index) {
+        const spot = Misc.getRecyclerSpotToMove()
+        if(spot && spot.index != -1) {
+            dw.log(`Recycling item ${index}`)
+            dw.moveItem("bag", index, "storage", spot.index, null, spot.id)
+        }
+        else {
+            dw.log("Storage is full.")
+        }
+    },
+
+    recyclerCollect() {
+       const recycler = Misc.getRecycler()
+       if(recycler) {
+        const spotRecycler = Misc.getRecyclerSpotToExtract()
+        const spotBag = Misc.getBagSpotToExtract()
+            if(spotRecycler && spotRecycler.index === -1) {
+                return
+            }
+
+            if(spotBag.index === -1) {
+                dw.log("Your inventory is full to collect from recycler.")
+                return
+            }
+
+            dw.log(`Collecting item ${spotRecycler.index} to ${spotBag.index}`)
+            dw.moveItem("output", spotRecycler.index, "bag", spotBag.index, spotRecycler.id)
+       }
+    },
+
+    recyclerTurnOn() {
+        const recycler = Misc.getRecycler()
+        if(recycler && recycler?.powerOn === 0) {
+            dw.log("Turning on")
+            dw.toggleStation(recycler.id)
+        }
+    },
+
+    mapInventory() {
+        const itemsToCombine = [];
+        const itemsToRemove = [];
+
+        // Helper function to log evaluation results
+        const logEvaluation = (item, result, message) => {};
+
+        // Helper function to log exclusion with colored mods
+        const logExclusion = (item, mods, reason) => {
+            const itemName = dw.mdInfo[item.md]?.name || 'Unknown Item';
+            const modCount = mods.length;
+            let color = 'white'; // Default to white
+            switch(modCount) {
+                case 1: color = 'lightgreen'; break;
+                case 2: color = 'green'; break;
+                case 3: color = 'blue'; break;
+                case 4: color = 'purple'; break;
+                case 5: color = 'gold'; break; // Assuming unique item has 5 mods
+            }
+
+            // Format mods with their values in white
+            const modDetails = mods.map(mod => `${mod}: ${item.mods[mod]}`).join(', ');
+
+            // Log the exclusion using DEBUG.log with color and reason
+            DEBUG.log(`<span style="color: ${color};">${itemName}</span> (${modDetails}) excluded because: ${reason}`);
+        };
+
+        // Loop through each item in the inventory
+        dw.character.inventory.forEach((item, index) => {
+            if (!item) return;
+
+            const mods = Object.keys(item.mods || {});
+            const tags = Array.from(dw.mdInfo[item.md]?.tags || []) || [];
+
+            // Log item type and mod details
+
+            // Check if any mod matches the global mods_to_keep list
+            const hasGlobalKeepMod = mods.some(mod => ITEMS.global.mods_to_keep.includes(mod));
+            if (hasGlobalKeepMod) {
+                logEvaluation(item, true, `Item has global mod to keep`);
+                return;
+            }
+
+            // Check if any tags matches the global tags_to_keep list
+            const hasGlobalKeepTag = tags.some(tag => ITEMS.global.tags_to_keep.includes(tag));
+            if (hasGlobalKeepTag) {
+                logEvaluation(item, true, `Item has global tag to keep`);
+                return;
+            }
+
+            // Check if any md matches the global mds_to_keep list
+            const hasGlobalKeepMd = ITEMS.global.mds_to_keep.includes(item.md);
+            if (hasGlobalKeepMd) {
+                logEvaluation(item, true, `Item has global md to keep`);
+                return;
+            }
+
+            // Check if any mod has a high quality based on global settings
+            const highQualityMod = Object.values(item.mods || {}).some(modValue => modValue >= ITEMS.global.min_any_mod_quality);
+            if (highQualityMod) {
+                logEvaluation(item, true, `Global high mod quality check: mod quality >= ${ITEMS.global.min_any_mod_quality}`);
+                return;
+            }
+
+            // Check if item has enough mods
+            const quantityMod = mods.length >= ITEMS.global.min_any_mod_quantity;
+            if (quantityMod) {
+                logEvaluation(item, true, `Global high mod quantity check: mod quantity >= ${ITEMS.global.min_any_mod_quantity}`);
+                return;
+            }
+
+            // Evaluate conditions for weapons
+            if (Misc.isWeapon(item)) {
+                const { conditions } = ITEMS.weapon;
+                const result = Misc.evaluateConditions(item, conditions, ITEMS.weapon.mods);
+                logEvaluation(item, result, 'Weapon conditions evaluated');
+                if (result) return;
+                logExclusion(item, mods, 'Weapon conditions failed');
+                itemsToRemove.push(index); // Mark for removal if conditions fail
+            }
+
+            // Evaluate conditions for armor
+            else if (Misc.isArmor(item)) {
+                const { conditions } = ITEMS.armor;
+                const result = Misc.evaluateConditions(item, conditions, ITEMS.armor.mods);
+                logEvaluation(item, result, 'Armor conditions evaluated');
+                if (result) return;
+                logExclusion(item, mods, 'Armor conditions failed');
+                itemsToRemove.push(index); // Mark for removal if conditions fail
+            }
+
+            // Evaluate conditions for accessories
+            else if (Misc.isAccessory(item)) {
+                const { conditions } = ITEMS.accessory;
+                const result = Misc.evaluateConditions(item, conditions, ITEMS.accessory.mods);
+                logEvaluation(item, result, 'Accessory conditions evaluated');
+                if (result) return;
+                logExclusion(item, mods, 'Accessory conditions failed');
+                itemsToRemove.push(index); // Mark for removal if conditions fail
+            }
+
+            // Evaluate conditions for runes
+            else if (Misc.isRune(item)) {
+                const { conditions } = ITEMS.rune;
+                const result = Misc.evaluateConditions(item, conditions, []);
+                logEvaluation(item, result, 'Rune socket conditions evaluated');
+                if (result) return;
+                logExclusion(item, mods, 'Rune conditions failed');
+                itemsToRemove.push(index); // Mark for removal if conditions fail
+            }
+
+            // Evaluate conditions for passives
+            else if (Misc.isPassive(item)) {
+                const { conditions } = ITEMS.passive;
+                const result = Misc.evaluateConditions(item, conditions, ITEMS.passive.mods);
+                logEvaluation(item, result, 'Passive conditions evaluated');
+                if (result) return;
+                logExclusion(item, mods, 'Passive conditions failed');
+                itemsToRemove.push(index); // Mark for removal if conditions fail
+            }
+
+            // Handle combinable resources
+            else if (ITEMS.combine.includes(item.md) || dw.mdInfo[item.md]?.isMat) {
+                logEvaluation(item, true, 'Item marked for combining');
+                itemsToCombine.push(index);
+            }
+        });
+
+        return {
+            remove: itemsToRemove,
+            combine: itemsToCombine
+        }
+    },
 
     /**
- * Cleans the inventory by removing unwanted items, combining resources, and sorting the inventory.
- * Items are classified by mod quality, mod count, and specific mod criteria.
- */
-cleanInventory() {
-    const itemsToCombine = [];
-    const itemsToRemove = [];
+     * Cleans the inventory by removing unwanted items, combining resources, and sorting the inventory.
+     * Items are classified by mod quality, mod count, and specific mod criteria.
+     */
+    cleanInventory() {
+        const { remove, combine } = Misc.mapInventory()
 
-    // Helper function to log evaluation results
-    const logEvaluation = (item, result, message) => {};
+        // Remove marked items
+        // if (CONFIG.removeItems && remove.length > 0) {
+            // remove.forEach(inventoryIndex => dw.deleteItem(inventoryIndex));
+        // }
 
-    // Helper function to log exclusion with colored mods
-    const logExclusion = (item, mods, reason) => {
-        const itemName = dw.mdInfo[item.md]?.name || 'Unknown Item';
-        const modCount = mods.length;
-        let color = 'white'; // Default to white
-        switch(modCount) {
-            case 1: color = 'lightgreen'; break;
-            case 2: color = 'green'; break;
-            case 3: color = 'blue'; break;
-            case 4: color = 'purple'; break;
-            case 5: color = 'gold'; break; // Assuming unique item has 5 mods
+        if (CONFIG.recycleItems && remove.length > 0) {
+            remove.forEach(inventoryIndex => {
+                Misc.recycleItem(inventoryIndex)
+            });
         }
 
-        // Format mods with their values in white
-        const modDetails = mods.map(mod => `${mod}: ${item.mods[mod]}`).join(', ');
-
-        // Log the exclusion using DEBUG.log with color and reason
-        DEBUG.log(`<span style="color: ${color};">${itemName}</span> (${modDetails}) excluded because: ${reason}`);
-    };
-
-    // Loop through each item in the inventory
-    dw.character.inventory.forEach((item, index) => {
-        if (!item) return;
-
-        const mods = Object.keys(item.mods || {});
-        const tags = Array.from(dw.mdInfo[item.md]?.tags || []) || [];
-
-        // Log item type and mod details
-
-        // Check if any mod matches the global mods_to_keep list
-        const hasGlobalKeepMod = mods.some(mod => ITEMS.global.mods_to_keep.includes(mod));
-        if (hasGlobalKeepMod) {
-            logEvaluation(item, true, `Item has global mod to keep`);
-            return;
+        // Combine resources
+        if (CONFIG.combineItems && combine.length > 0) {
+            dw.combineItems(combine);
         }
 
-        // Check if any tags matches the global tags_to_keep list
-        const hasGlobalKeepTag = tags.some(tag => ITEMS.global.tags_to_keep.includes(tag));
-        if (hasGlobalKeepTag) {
-            logEvaluation(item, true, `Item has global tag to keep`);
-            return;
+        // Sort inventory after cleaning
+        if (CONFIG.sortItems) {
+            dw.sortInventory();
         }
 
-        // Check if any md matches the global mds_to_keep list
-        const hasGlobalKeepMd = ITEMS.global.mds_to_keep.includes(item.md);
-        if (hasGlobalKeepMd) {
-            logEvaluation(item, true, `Item has global md to keep`);
-            return;
-        }
-
-        // Check if any mod has a high quality based on global settings
-        const highQualityMod = Object.values(item.mods || {}).some(modValue => modValue >= ITEMS.global.min_any_mod_quality);
-        if (highQualityMod) {
-            logEvaluation(item, true, `Global high mod quality check: mod quality >= ${ITEMS.global.min_any_mod_quality}`);
-            return;
-        }
-
-        // Check if item has enough mods
-        const quantityMod = mods.length >= ITEMS.global.min_any_mod_quantity;
-        if (quantityMod) {
-            logEvaluation(item, true, `Global high mod quantity check: mod quantity >= ${ITEMS.global.min_any_mod_quantity}`);
-            return;
-        }
-
-        // Evaluate conditions for weapons
-        if (Misc.isWeapon(item)) {
-            const { conditions } = ITEMS.weapon;
-            const result = Misc.evaluateConditions(item, conditions, ITEMS.weapon.mods);
-            logEvaluation(item, result, 'Weapon conditions evaluated');
-            if (result) return;
-            logExclusion(item, mods, 'Weapon conditions failed');
-            itemsToRemove.push(index); // Mark for removal if conditions fail
-        }
-
-        // Evaluate conditions for armor
-        else if (Misc.isArmor(item)) {
-            const { conditions } = ITEMS.armor;
-            const result = Misc.evaluateConditions(item, conditions, ITEMS.armor.mods);
-            logEvaluation(item, result, 'Armor conditions evaluated');
-            if (result) return;
-            logExclusion(item, mods, 'Armor conditions failed');
-            itemsToRemove.push(index); // Mark for removal if conditions fail
-        }
-
-        // Evaluate conditions for accessories
-        else if (Misc.isAccessory(item)) {
-            const { conditions } = ITEMS.accessory;
-            const result = Misc.evaluateConditions(item, conditions, ITEMS.accessory.mods);
-            logEvaluation(item, result, 'Accessory conditions evaluated');
-            if (result) return;
-            logExclusion(item, mods, 'Accessory conditions failed');
-            itemsToRemove.push(index); // Mark for removal if conditions fail
-        }
-
-        // Evaluate conditions for runes
-        else if (Misc.isRune(item)) {
-            const { conditions } = ITEMS.rune;
-            const result = Misc.evaluateConditions(item, conditions, []);
-            logEvaluation(item, result, 'Rune socket conditions evaluated');
-            if (result) return;
-            logExclusion(item, mods, 'Rune conditions failed');
-            itemsToRemove.push(index); // Mark for removal if conditions fail
-        }
-
-        // Evaluate conditions for passives
-        else if (Misc.isPassive(item)) {
-            const { conditions } = ITEMS.passive;
-            const result = Misc.evaluateConditions(item, conditions, ITEMS.passive.mods);
-            logEvaluation(item, result, 'Passive conditions evaluated');
-            if (result) return;
-            logExclusion(item, mods, 'Passive conditions failed');
-            itemsToRemove.push(index); // Mark for removal if conditions fail
-        }
-
-        // Handle combinable resources
-        else if (ITEMS.combine.includes(item.md) || dw.mdInfo[item.md]?.isMat) {
-            logEvaluation(item, true, 'Item marked for combining');
-            itemsToCombine.push(index);
-        }
-    });
-
-    // Remove marked items
-    if (CONFIG.removeItems && itemsToRemove.length > 0) {
-        itemsToRemove.forEach(inventoryIndex => dw.deleteItem(inventoryIndex));
+        Misc.recyclerTurnOn()
+        Misc.recyclerCollect()
     }
-
-    // Combine resources
-    if (CONFIG.combineItems && itemsToCombine.length > 0) {
-        dw.combineItems(itemsToCombine);
-    }
-
-    // Sort inventory after cleaning
-    if (CONFIG.sortItems) {
-        dw.sortInventory();
-    }
-}
 
 };
 
@@ -1919,7 +2029,6 @@ const eventPriority = [
     Action.useHealAlternativeSkill,
     Action.useGraftSkill,
     Action.useShieldSkill,
-    Finder.getNearestToTaunt,
     Finder.getNextMonster,
     Movement.moveShrub,
     Movement.moveMission,
@@ -1942,8 +2051,13 @@ function handleGameEvents() {
                                         attackers.length === 0 && 
                                         (dw.character.hp !== dw.character.maxHp)
 
+                                        
+
         // Handle skill-based actions
-        if (target.toSkill >= 0) {
+        if(target.toTaunt) {
+            Action.followAndUseSkill(target, SKILLS.taunt.index)
+        }
+        else if (target.toSkill >= 0) {
             Action.followAndUseSkill(target, target.toSkill);
         }
         // Handle attack actions
@@ -1953,6 +2067,9 @@ function handleGameEvents() {
         // Handle gathering actions
         else if (target.toGather) {
             Movement.moveAndGather(target);
+        }
+        else {
+            Movement.moveCloserToTarget(target)
         }
         return; // Stop processing further events after acting on the current one
     }
