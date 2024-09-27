@@ -1842,7 +1842,7 @@ const Misc = {
 
     recyclerTurnOn() {
         const recycler = Misc.getRecycler()
-        if(recycler && recycler?.powerOn === 0) {
+        if(recycler && recycler?.powerOn === 0 && recycler.storage.find(e => e !== null)) {
             dw.log("Turning on")
             dw.toggleStation(recycler.id)
         }
