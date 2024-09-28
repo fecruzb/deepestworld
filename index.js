@@ -37,7 +37,7 @@ const SETTINGS = {
  * Configuration flags for various behaviors
  */
 const CONFIG = {
-    exploreNewAreas: false,
+    exploreNewAreas: true,
     removeItems: false,
     combineItems: true,
     recycleItems: true,
@@ -281,7 +281,7 @@ const SCORE = {
          * HP threshold. Monsters with max HP above this level are avoided,
          * as they are considered too tough to handle, even if their rarity is low.
          */
-        rareMonsterHpThreshold: 18000,
+        rareMonsterHpThreshold: 30000,
     },
 
     resource: {
@@ -547,6 +547,11 @@ const Util = {
                 continue; // Skip this monster because the character is inside its hitbox
             }
 
+            // Check if the character is already inside cone of view
+            if (this.isPointInCone(monster, dw.c)) {
+                continue; // The point is not safe
+            }
+
             // Check if the target point is in the monster's cone of vision
             if (this.isPointInCone(monster, target)) {
                 return false; // The point is not safe
@@ -573,6 +578,11 @@ const Util = {
             // Check if the character is inside the monster's hitbox
             if (this.isPointInsideHitbox({ x: dw.character.x, y: dw.character.y }, monsterPosition, hitbox)) {
                 continue; // Skip this monster because the character is inside its hitbox
+            }
+
+             // Check if the character is already inside cone of view
+            if (this.isLineInConeOfVision(monster, target, dw.c)) {
+                continue; // The point is not safe
             }
 
             // Check if the path between target and origin is in the monster's cone of vision
@@ -2164,7 +2174,7 @@ function gameLoop() {
     if (IS_ACTIVE) {
         handleGameEvents();
     }
-    setTimeout(gameLoop, 350); // Re-run the loop every 250ms
+    setTimeout(gameLoop, 300); // Re-run the loop every 250ms
 }
 
 gameLoop();
