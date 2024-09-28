@@ -282,6 +282,12 @@ const SCORE = {
          * as they are considered too tough to handle, even if their rarity is low.
          */
         rareMonsterHpThreshold: 30000,
+
+         /**
+         * Global HP threshold
+         */
+        hpThreshold: 30000,
+        hpThresholScore: -100,
     },
 
     resource: {
@@ -1096,6 +1102,9 @@ const Finder = {
                 }
                 score += Util.distanceToTarget(monster) * SCORE.proximity.distanceMultiplier; // Apply unified distance-based score adjustment
 
+                if (monster.maxHp >= SCORE.monster.hpThreshold) {
+                    score += SCORE.monster.hpThresholScore; 
+                }
 
                 // Apply rare monster score
                 if (monster.r > 0) {
