@@ -24,7 +24,7 @@ const SETTINGS = {
     visionConeRadius: 3.2, 
     predictionTime: 1, 
     pathStepSize: 1,
-    maxPathfindingIterations: 500,
+    maxPathfindingIterations: 100,
     interpolationSteps: 100,
     gooProximityRange: 2,
     monsterProximityRange: 1,
@@ -37,7 +37,7 @@ const SETTINGS = {
  * Configuration flags for various behaviors
  */
 const CONFIG = {
-    exploreNewAreas: true,
+    exploreNewAreas: false,
     removeItems: false,
     combineItems: true,
     recycleItems: true,
@@ -68,13 +68,13 @@ const SKILLS = {
         range: 0.7,
     },
     shield: {
-        enable: true,
+        enable: false,
         index: 2,
         range: 0.5,
         withBomb: true
     },
     heal: {
-        enable: true,
+        enable: false,
         index: 1,
         range: 0.5,
         hpThreshold: 0.95,
@@ -281,7 +281,7 @@ const SCORE = {
          * HP threshold. Monsters with max HP above this level are avoided,
          * as they are considered too tough to handle, even if their rarity is low.
          */
-        rareMonsterHpThreshold: 30000,
+        rareMonsterHpThreshold: 18000,
     },
 
     resource: {
@@ -474,6 +474,43 @@ const Util = {
         }
         return false;
     },
+    
+    isPathBlockedByItems(x, y) {
+        const collisionEntities = dw.findEntities(e => dw.mdInfo[e.md]?.canCollide);
+
+        // Check each collision entity to see if the point is inside its hitbox
+        for (const entity of collisionEntities) {
+            const hitbox = dw.getHitbox(entity.md);
+            const entityPosition = { x: entity.x, y: entity.y };
+
+            // Check if the character itself is inside the hitbox, if so, skip this entity
+            if (Util.isPointInsideHitbox({ x: dw.character.x, y: dw.character.y }, entityPosition, hitbox)) {
+                continue; // Skip this entity because the character is inside its hitbox
+            }
+
+            // Check if the given point (x, y) is inside the entity's hitbox
+            if (Util.isPointInsideHitbox({ x, y }, entityPosition, hitbox)) {
+                return true; // The point is blocked by an entity
+            }
+        }
+
+        return false; // No entities block the point
+    },
+
+    // Helper function to check if a point is inside a hitbox
+    isPointInsideHitbox(point, entityPosition, hitbox) {
+        const hitboxLeft = entityPosition.x; // x is the left edge of the hitbox
+        const hitboxRight = entityPosition.x + hitbox.w; // right edge is x + width
+        const hitboxTop = entityPosition.y; // y is the top edge of the hitbox
+        const hitboxBottom = entityPosition.y + hitbox.h; // bottom edge is y + height
+
+        return (
+            point.x >= hitboxLeft &&
+            point.x <= hitboxRight &&
+            point.y >= hitboxTop &&
+            point.y <= hitboxBottom
+        );
+    },
 
     /**
      * Checks if there is any terrain blocking the path between two points.
@@ -486,7 +523,7 @@ const Util = {
             const t = i / SETTINGS.interpolationSteps;
             const point = this.lerp(origin, target, t);
             const terrain = dw.getTerrainAt(point.x, point.y, 0);
-            if (terrain !== 0 || dw.getTerrainAt(point.x, point.y, -1) < 1) return true;
+            if (terrain !== 0 || dw.getTerrainAt(point.x, point.y, -1) < 1 || Util.isPathBlockedByItems(point.x, point.y)) return true;
         }
         return false;
     },
@@ -499,12 +536,25 @@ const Util = {
      */
     isSafe(target) {
         for (const monster of Finder.getMonsters()) {
-            if (monster.targetId !== dw.c.id && monster.bad > 0 && this.isPointInCone(monster, target)) {
-                return false;
+            // Skip monsters that are already targeting the character or aren't aggressive
+            if (monster.targetId === dw.c.id || monster.bad <= 0) continue;
+
+            const hitbox = dw.getHitbox(monster.md);
+            const monsterPosition = { x: monster.x, y: monster.y };
+
+            // Check if the character is inside the monster's hitbox
+            if (this.isPointInsideHitbox({ x: dw.character.x, y: dw.character.y }, monsterPosition, hitbox)) {
+                continue; // Skip this monster because the character is inside its hitbox
+            }
+
+            // Check if the target point is in the monster's cone of vision
+            if (this.isPointInCone(monster, target)) {
+                return false; // The point is not safe
             }
         }
-        return true;
+        return true; // No monsters detect the target
     },
+
 
     /**
      * Determines if a direct line between two points is safe from monster detection.
@@ -513,13 +563,26 @@ const Util = {
      * @returns {boolean} True if the line between the points is safe, false otherwise.
      */
     isSafePath(target, origin) {
-        for (const monster of Finder.getMonsters()) {    
-            if (monster.targetId !== dw.c.id && monster.bad > 0 && this.isLineInConeOfVision(monster, target, origin)) {
-                return false;
+        for (const monster of Finder.getMonsters()) {
+            // Skip monsters that are already targeting the character or aren't aggressive
+            if (monster.targetId === dw.c.id || monster.bad <= 0) continue;
+
+            const hitbox = dw.getHitbox(monster.md);
+            const monsterPosition = { x: monster.x, y: monster.y };
+
+            // Check if the character is inside the monster's hitbox
+            if (this.isPointInsideHitbox({ x: dw.character.x, y: dw.character.y }, monsterPosition, hitbox)) {
+                continue; // Skip this monster because the character is inside its hitbox
+            }
+
+            // Check if the path between target and origin is in the monster's cone of vision
+            if (this.isLineInConeOfVision(monster, target, origin)) {
+                return false; // The path is not safe
             }
         }
-        return true;
+        return true; // The path is safe from all monsters
     },
+
 
     /**
      * Calculates the distance from the current character position to the target.
@@ -537,9 +600,15 @@ const Util = {
      */
     checkGooProximity(monster) {
         let count = 0;
-        if (!dw.hasTag(monster, "goo")) return count;
+        if (!Array.from(dw.mdInfo[monster.md]?.tag || [] ).includes("goo")) {
+            return count;
+        }
+
         Finder.getMonsters().forEach(other => {
-            if (other.id !== monster.id && dw.hasTag(other, "goo") && dw.distance(monster.x, monster.y, other.x, other.y) <= SETTINGS.gooProximityRange) {
+            if (
+                other.id !== monster.id && 
+                Array.from(dw.mdInfo[other.md]?.tag || [] ).includes("goo") && 
+                dw.distance(monster.x, monster.y, other.x, other.y) <= SETTINGS.gooProximityRange) {
                 count++;
             }
         });
@@ -990,7 +1059,7 @@ const Finder = {
         return monsters.map(monster => {
             let score = 0;
             
-            if(dw.mdInfo[monster.md].isStation) {
+            if(dw.mdInfo[monster.md]?.isStation) {
                 const inventory = Misc.mapInventory()
                 if(inventory?.remove?.length > 0 || monster?.output.filter(e => e !== null)?.length >= 1 || monster?.powerOn !== 0)
                     score += 50
@@ -1063,6 +1132,15 @@ const Finder = {
         // iterate to find a monster with path
         // find first mosnter with path and return the monster and the path
         const target = monsters?.find(m => {
+
+            if(m.monster.owner && m.monster.md.includes("recycler")) {
+                const inventory = Misc.mapInventory()
+                if(inventory?.remove?.length === 0 && m?.monster?.output.filter(e => e !== null)?.length === 0 ) {
+                    return false
+                }
+            }
+
+
             if(m.monster.targetId === dw.c.id || Finder.getFollowCharacters().includes(m.monster.targetId)) {
                 return true
             }
@@ -2068,8 +2146,8 @@ function handleGameEvents() {
         else if (target.toGather) {
             Movement.moveAndGather(target);
         }
-        else if (dw.mdInfo[target.md].isStation) {            
-            dw.move(target.x, target.y)
+        else if (dw.mdInfo[target.md]?.isStation) {            
+            Movement.moveCloserToTarget(target, 1)
         }
         return; // Stop processing further events after acting on the current one
     }
