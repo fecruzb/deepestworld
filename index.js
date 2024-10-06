@@ -1,4 +1,14 @@
 const IS_ACTIVE = true;
+const DRAWING = {
+    grid: true,
+    hitbox: true,
+    treeSpot: true,
+    visitedAreas: true,
+    monsterVision: true,
+    path: true,
+    monsterScore: true,
+}
+
 dw.debug = true;
 let lastPosition = { x: dw.character.x, y: dw.character.y };
 let lastMoveTime = Date.now();
@@ -18,27 +28,30 @@ const visitedPositions = [];
  * @property {number} monsterProximityRange - Radius to check the proximity of other monsters.
  */
 const SETTINGS = {
-    globalProximityToAction: 0,
-    globalSafePositioning: 0,
-    visionConeAngle: Math.PI * 1.15, 
-    visionConeRadius: 3.2, 
-    predictionTime: 1, 
-    pathStepSize: 1,
-    maxPathfindingIterations: 100,
-    interpolationSteps: 100,
-    gooProximityRange: 2,
+    gameLoopInterval: 400,
+    globalProximityToAction: 0.5,
+    globalSafePositioning: 0.2,
+    pathProximity: 0.5,
+    visionConeAngle: Math.PI * 1.1, 
+    visionConeRadius: 3.4, 
+    pathStepSize: 0.5,
+    maxPathfindingIterations: 250,
+    interpolationSteps: 20,
+    gooProximityRange: 1,
     monsterProximityRange: 1,
     zoneLevelSuicide: 0,
-    scoreLimit: -10,
-    idleTime: 1005,
+    idleTime: 5000,
 };
 
 /**
  * Configuration flags for various behaviors
  */
 const CONFIG = {
+    plantTree: true,
+    getResources: true,
+    optimizePath: true,
     exploreNewAreas: true,
-    removeItems: false,
+    removeItems: true,
     combineItems: true,
     recycleItems: true,
     sortItems: true,
@@ -46,14 +59,9 @@ const CONFIG = {
     suicideUnderground: true,
     attackNextScoreMonster: true,
     moveToMission: false,
-    enableRandomMovement: false,
-    prioritizeResource: true,
-    prioritizeMission: false,
-    followAlliedCharacter: false,
-    healAndFollowAllied: false,
-    enableTeleport: true,
     moveToShrub: false,
     enableRecoveryDistance: false,
+    followAllied: false,
 };
 
 const SKILLS = {
@@ -62,43 +70,58 @@ const SKILLS = {
         index: 0,
         range: 0.7,
     },
-    attack_exertion: {
-        enable: true,
-        index: 5,
-        range: 0.7,
-    },
-    shield: {
-        enable: false,
-        index: 2,
-        range: 0.5,
-        withBomb: true
-    },
-    heal: {
+    exertion: {
         enable: false,
         index: 1,
+        range: 0.7,
+        hpThreshold: 30000,
+    },
+    conservation: {
+        enable: false,
+        index: 1,
+        range: 0.7,
+        hpThreshold: 1,
+    },
+    shield: {
+        enable: true,
+        index: 3,
         range: 0.5,
-        hpThreshold: 0.95,
-        withMasochism: false
+        withBomb: false
+    },
+    heal: {
+        enable: true,
+        index: 2,
+        range: 0.5,
+        hpThreshold: 1,
+        hpThresholdMin: 0.4,
+        withExertion: false,
+        withMasochism: false,
+        withGraft: true
     },
     heal_alternative: {
         enable: false,
-        index: 1,
+        index: 2,
         range: 0.5,
         hpThreshold: 0.6,
         withMasochism: false
     },
+    buff: {
+        enable: false,
+        index: 6,
+        range: 0.75,
+    },
     dash: {
         enable: true,
-        index: 3,
-        range: 2.6,
-        minRange: 1.75
+        index: 4,
+        range: 2,
+        minRange: 1.5
     },
     teleport: {
         enable: true,
-        index: 4,
-        range: 4.6,
-        minRange: 3,
-        minSavedRange: 1.5
+        index: 5,
+        range: 3.8,
+        minRange: 2,
+        minSavedRange: 0
     },
     graft: {
         enable: false,
@@ -110,14 +133,8 @@ const SKILLS = {
         index: 9,
         range: 3
     },
-    conservation: {
-        enable: false,
-        index: 9,
-        range: 0.88,
-        hpThreshold: 0.4,
-    },
     taunt: {
-        enable: false,
+        enable: true,
         index: 5,
         range: 0.88
     },
@@ -130,60 +147,79 @@ const SKILLS = {
 
 const ITEMS = {
     global: {
-        min_any_mod_quantity: 4, // Any mod with quality 8 or above should be kept
-        min_any_mod_quality: 10, // Any mod with quality 8 or above should be kept
-        mods_to_keep: ["masochism", "physborn", "fireborn", "physBorn", "fireBorn", "dmg", "dmgMore", "blink", " blessing"], // List of mods that will keep the item regardless of other conditions
+        min_any_mod_quantity: 4,
+        min_any_mod_quality: 12,
+        mods_to_keep: [],
         tags_to_keep: [],
-        mds_to_keep: []
+        mds_to_keep: ["physwooddagger2", "physwooddagger3"]
     },
     weapon: {
         mods: [
             "physDmgIncLocal", 
-            "physDmgLocal", 
-            "hpGain"
-        ], // Mods to look for
+            "physDmgLocal",
+        ],
         conditions: {
-            operator: "AND", // Operator for combining conditions
+            operator: "AND", 
             conditions: [
                 { 
-                    condition: "min_quantity", // Check for minimum number of mods
-                    value: 2 // Minimum mods from the list required
+                    condition: "min_quantity", 
+                    value: 2 
                 },
                 { 
-                    condition: "min_quality", // Check for minimum mod quality
-                    value: 4 // At least one mod from the list should be >= 5 quality
+                    condition: "min_quality", 
+                    value: 5,
                 },
                 { 
-                    condition: "min_sum_quality", // Check for minimum sum of mod qualities
-                    value: 7 // Combined quality of mods from the list should be >= 8
+                    condition: "min_sum_quality",
+                    value: 8
                 }
             ]
         }
     },
     accessory: {
-        mods: ["physDmg", "dmg", "hp", "hpRegen"], // Mods to look for
+        mods: ["dmg", "physDmg", "hp"],
         conditions: {
-            operator: "AND", // Operator for combining conditions
+            operator: "AND",
             conditions: [
                 { 
                     condition: "min_quantity", 
-                    value: 2
+                    value: 3
                 },
                 { 
                     condition: "min_quality", 
-                    value: 4
+                    value: 5
                 },
                 { 
                     condition: "min_sum_quality", 
-                    value: 7 
+                    value: 8
+                }
+            ]
+        }
+    },
+    belt: {
+        mods: ["dmg", "physDmg", "hp"],
+        conditions: {
+            operator: "AND",
+            conditions: [
+                { 
+                    condition: "min_quantity", 
+                    value: 3
+                },
+                { 
+                    condition: "min_quality", 
+                    value: 5
+                },
+                { 
+                    condition: "min_sum_quality", 
+                    value: 8
                 }
             ]
         }
     },
     armor: {
-        mods: ["hp", "dmg", "hpRegen", "physDmg"], // Mods to look for
+        mods: ["hp", "hpRegen"],
         conditions: {
-            operator: "AND", // Operator for combining conditions
+            operator: "AND",
             conditions: [
                 { 
                     condition: "min_quantity", 
@@ -191,51 +227,41 @@ const ITEMS = {
                 },
                 { 
                     condition: "min_quality", 
-                    value: 4
+                    value: 5
                 },
                 { 
                     condition: "min_sum_quality", 
-                    value: 7
-                }
-            ]
-        }
-    },
-    rune: {
-         conditions: {
-            operator: "AND", // Operator for combining conditions
-            conditions: [
-                { 
-                    condition: "min_socket", // Check for minimum number of mods
-                    value: 4 // Minimum mods from the list required
+                    value: 8
                 }
             ]
         }
     },
     passive: {
-        mods: ["hpInc", "hpRegenInc", "gcdr", "physDmgInc", "dmg", "dmgInc", "physDmg", "crit"], // Mods to look for
+        mods: [
+                "hpInc", 
+                "hpRegenInc", 
+                "gcdr", 
+                "crit", "critMult",
+                "physDmg", "physDmgInc", "physDmgMore",
+                "dmg", "dmgInc", "dmgMore",  
+                "fireDmg", "fireDmgInc", "fireDmgMore"
+        ], 
         conditions: {
             operator: "OR",
             conditions: [
                 { 
                     condition: "min_quantity", 
-                    value: 2 // At least 2 mods from the list
+                    value: 2
                 },
                 { 
                     condition: "min_quality", 
-                    value: 5 // At least one mod from the list has to be equal or greater than 4
+                    value: 3
                 },
-                { 
-                    condition: "min_sum_quality", 
-                    value: 7 // Combined quality of mods from the list should be >= 6
-                },
-                { 
-                    condition: "min_sum_quality_total", 
-                    value: 10 // Combined quality of mods from the list should be >= 8
-                }
             ]
         }
     },
-    combine: ["wood", "flax", "rock", "portalScroll"],  // Combineable resource items
+    combine: ["wood",  "portalScroll", "essence", "dust"],
+    remove: ["flax", "rawhide", "linenCloth"]
 };
 
 const SCORE = {
@@ -246,11 +272,13 @@ const SCORE = {
          */
         baseScore: 15,
 
+        missionIdScore: 50,
+
         /**
          * Bonus if the monster is injured (current HP < max HP).
          * Prioritizes monsters that are easier to defeat due to lower HP.
          */
-        injuredBonus: 10,
+        injuredBonus: 50,
 
         /**
          * Large bonus if the monster is specifically targeting the player character.
@@ -281,12 +309,12 @@ const SCORE = {
          * HP threshold. Monsters with max HP above this level are avoided,
          * as they are considered too tough to handle, even if their rarity is low.
          */
-        rareMonsterHpThreshold: 30000,
+        rareMonsterHpThreshold: 50000,
 
          /**
          * Global HP threshold
          */
-        hpThreshold: 30000,
+        hpThreshold: 50000,
         hpThresholScore: -100,
     },
 
@@ -337,7 +365,7 @@ const SCORE = {
          * Adjustment factor applied for each level of difference between the player and the monster.
          * Larger level differences, whether higher or lower, decrease the score.
          */
-        differenceFactor: -3
+        differenceFactor: 5
     },
 
     path: {
@@ -435,8 +463,8 @@ const Util = {
      * @returns {Object} The predicted future position.
      */
     getObserverPositionAtTime(observer, time) {
-        const futureX = observer.x + observer.dx * observer.moveSpeed * time;
-        const futureY = observer.y + observer.dy * observer.moveSpeed * time;
+        const futureX = observer.x + observer.dx * (observer.moveSpeed || 0.3) * time;
+        const futureY = observer.y + observer.dy * (observer.moveSpeed || 0.3) * time;
         return { ...observer, x: futureX, y: futureY };
     },
 
@@ -448,21 +476,19 @@ const Util = {
      * @returns {boolean} True if the line is in the vision cone, false otherwise.
      */
     isLineInConeOfVision(observer, startPos, endPos) {
-        for (let t = 0; t <= SETTINGS.predictionTime; t += 1) {
-            const futureObserver = this.getObserverPositionAtTime(observer, t);
-            if (this.isPointInCone(futureObserver, startPos) || this.isPointInCone(futureObserver, endPos)) {
+        if (this.isPointInCone(observer, startPos) || this.isPointInCone(observer, endPos)) {
+            return true;
+        }
+        for (let i = 0; i <= SETTINGS.interpolationSteps; i++) {
+            const lerpT = i / SETTINGS.interpolationSteps;
+            const currentPos = this.lerp(startPos, endPos, lerpT);
+            if (this.isPointInCone(observer, currentPos)) {
                 return true;
-            }
-            for (let i = 0; i <= SETTINGS.interpolationSteps; i++) {
-                const lerpT = i / SETTINGS.interpolationSteps;
-                const currentPos = this.lerp(startPos, endPos, lerpT);
-                if (this.isPointInCone(futureObserver, currentPos)) {
-                    return true;
-                }
             }
         }
         return false;
     },
+
 
     /**
      * Checks if a trajectory crosses the vision cone of a monster.
@@ -482,6 +508,7 @@ const Util = {
     },
     
     isPathBlockedByItems(x, y) {
+
         const collisionEntities = dw.findEntities(e => dw.mdInfo[e.md]?.canCollide);
 
         // Check each collision entity to see if the point is inside its hitbox
@@ -489,13 +516,8 @@ const Util = {
             const hitbox = dw.getHitbox(entity.md);
             const entityPosition = { x: entity.x, y: entity.y };
 
-            // Check if the character itself is inside the hitbox, if so, skip this entity
-            if (Util.isPointInsideHitbox({ x: dw.character.x, y: dw.character.y }, entityPosition, hitbox)) {
-                continue; // Skip this entity because the character is inside its hitbox
-            }
-
             // Check if the given point (x, y) is inside the entity's hitbox
-            if (Util.isPointInsideHitbox({ x, y }, entityPosition, hitbox)) {
+            if (Util.isPointInsideHitbox({ x, y, ...dw.getHitbox(dw.c.md) }, entityPosition, hitbox)) {
                 return true; // The point is blocked by an entity
             }
         }
@@ -505,18 +527,82 @@ const Util = {
 
     // Helper function to check if a point is inside a hitbox
     isPointInsideHitbox(point, entityPosition, hitbox) {
-        const hitboxLeft = entityPosition.x; // x is the left edge of the hitbox
-        const hitboxRight = entityPosition.x + hitbox.w; // right edge is x + width
-        const hitboxTop = entityPosition.y; // y is the top edge of the hitbox
-        const hitboxBottom = entityPosition.y + hitbox.h; // bottom edge is y + height
+        // Calculate the left, right, top, and bottom edges of the entity's hitbox
+        const hitboxLeft = entityPosition.x - hitbox.w / 2; // Left edge is center minus half the width
+        const hitboxRight = entityPosition.x + hitbox.w / 2; // Right edge is center plus half the width
+        const hitboxTop = entityPosition.y - hitbox.h; // Top edge is bottom minus the height of the hitbox
+        const hitboxBottom = entityPosition.y; // Bottom edge is the entity position's y
 
-        return (
-            point.x >= hitboxLeft &&
-            point.x <= hitboxRight &&
-            point.y >= hitboxTop &&
-            point.y <= hitboxBottom
-        );
+        // If the point itself has width and height, treat it as a hitbox as well
+        if (point.w && point.h) {
+            // Calculate the edges of the point's hitbox
+            const pointLeft = point.x - point.w / 2;
+            const pointRight = point.x + point.w / 2;
+            const pointTop = point.y - point.h;
+            const pointBottom = point.y;
+
+            // Check for hitbox overlap between the entity's hitbox and the point's hitbox
+            return (
+                hitboxLeft < pointRight &&
+                hitboxRight > pointLeft &&
+                hitboxTop < pointBottom &&
+                hitboxBottom > pointTop
+            );
+        } else {
+            // If no width or height is provided, treat the point as a single coordinate
+            return (
+                point.x >= hitboxLeft &&
+                point.x <= hitboxRight &&
+                point.y >= hitboxTop &&
+                point.y <= hitboxBottom
+            );
+        }
     },
+    
+    /**
+     * Checks if a specific point is blocked by terrain, items, or the character's hitbox.
+     * @param {Object} point - The point position (x, y).
+     * @param {Object} [characterHitbox] - Optional. The character's hitbox {w, h} if provided.
+     * @returns {boolean} True if the point or hitbox is blocked, false otherwise.
+     */
+    isPointBlocked(point, characterHitbox = null) {
+        const terrainSurface = dw.getTerrainAt(point.x, point.y, 0);
+        const terrainUnderground = dw.getTerrainAt(point.x, point.y, -1);
+
+        // Check if terrain is blocking
+        if (terrainSurface !== 0 || terrainUnderground < 1) {
+            return true;
+        }
+
+        // Check if any items block the path
+        if (Util.isPathBlockedByItems(point.x, point.y)) {
+            return true;
+        }
+
+        // If characterHitbox is provided, check if any part of the hitbox is blocked
+        if (characterHitbox) {
+            // We loop through the hitbox area to see if any part is blocked by terrain or items
+            const hitboxLeft = point.x - characterHitbox.w / 2;
+            const hitboxRight = point.x + characterHitbox.w / 2;
+            const hitboxTop = point.y - characterHitbox.h;
+            const hitboxBottom = point.y;
+
+            for (let x = hitboxLeft; x < hitboxRight; x++) {
+                for (let y = hitboxTop; y < hitboxBottom; y++) {
+                    const surface = dw.getTerrainAt(x, y, 0);
+                    const underground = dw.getTerrainAt(x, y, -1);
+                    
+                    if (surface !== 0 || underground < 1) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    },
+
+
 
     /**
      * Checks if there is any terrain blocking the path between two points.
@@ -528,10 +614,13 @@ const Util = {
         for (let i = 0; i <= SETTINGS.interpolationSteps; i++) {
             const t = i / SETTINGS.interpolationSteps;
             const point = this.lerp(origin, target, t);
-            const terrain = dw.getTerrainAt(point.x, point.y, 0);
-            if (terrain !== 0 || dw.getTerrainAt(point.x, point.y, -1) < 1 || Util.isPathBlockedByItems(point.x, point.y)) return true;
+
+            // Use the isPointBlocked function to check if this point is blocked
+            if (this.isPointBlocked(point, dw.getHitbox(dw.character.md))) {
+                return true; // If any point along the path is blocked, the path is blocked
+            }
         }
-        return false;
+        return false; // Path is clear
     },
 
     /**
@@ -548,14 +637,11 @@ const Util = {
             const hitbox = dw.getHitbox(monster.md);
             const monsterPosition = { x: monster.x, y: monster.y };
 
-            // Check if the character is inside the monster's hitbox
-            if (this.isPointInsideHitbox({ x: dw.character.x, y: dw.character.y }, monsterPosition, hitbox)) {
-                continue; // Skip this monster because the character is inside its hitbox
-            }
+            
 
             // Check if the character is already inside cone of view
             if (this.isPointInCone(monster, dw.c)) {
-                continue; // The point is not safe
+                true // The point is not safe
             }
 
             // Check if the target point is in the monster's cone of vision
@@ -582,14 +668,14 @@ const Util = {
             const monsterPosition = { x: monster.x, y: monster.y };
 
             // Check if the character is inside the monster's hitbox
-            if (this.isPointInsideHitbox({ x: dw.character.x, y: dw.character.y }, monsterPosition, hitbox)) {
+            if (this.isPointInsideHitbox({ x: dw.character.x, y: dw.character.y, ...dw.getHitbox(dw.c.md) }, monsterPosition, hitbox)) {
                 continue; // Skip this monster because the character is inside its hitbox
             }
 
-             // Check if the character is already inside cone of view
-            if (this.isLineInConeOfVision(monster, target, dw.c)) {
-                continue; // The point is not safe
-            }
+            //  // Check if the character is already inside cone of view
+            // if (this.isLineInConeOfVision(monster, target, dw.c)) {
+            //     continue; // The point is not safe
+            // }
 
             // Check if the path between target and origin is in the monster's cone of vision
             if (this.isLineInConeOfVision(monster, target, origin)) {
@@ -714,16 +800,19 @@ const Util = {
         return { x: newX, y: newY };
     },
 
-    /**
-     * Generates a safe path from the character's position to a target position, avoiding monsters.
-     * @param {Object} characterPos - The starting position (x, y).
-     * @param {Object} targetPos - The target position (x, y, dx, dy) of the monster, including direction.
-     * @returns {Array<Object>} The safe path as an array of positions (x, y).
-     */
-    generateSafePath(characterPos, targetPos) {
+      /**
+ * Generates a safe path from the character's position to a target or a point within a certain distance, avoiding monsters.
+ * If a distance is provided, it finds the closest safe point within that distance and ensures a clear line of sight to the target.
+ * @param {Object} characterPos - The starting position (x, y).
+ * @param {Object} targetPos - The target position (x, y, dx, dy) of the monster, including direction.
+ * @param {number} [maxDistance] - Optional maximum distance to target. If provided, the function will find a safe point within this distance.
+ * @returns {Array<Object>} The safe path as an array of positions (x, y).
+ */
+    generateSafePath(characterPos, targetPos, maxDistance = null) {
 
         let adjustedTargetPos = targetPos;
-        if(targetPos.md && dw.mdInfo[targetPos.md].isMonster && targetPos.bad > 0) {
+
+        if (targetPos.md && dw.mdInfo[targetPos.md].isMonster && targetPos.bad > 0) {
             const safePosition = Util.calculateSafePosition(targetPos, SETTINGS.globalProximityToAction);
             adjustedTargetPos = {
                 ...targetPos,
@@ -731,10 +820,14 @@ const Util = {
                 y: safePosition.y,
             };
         }
-        
-        // Check if the distance between character and adjusted target is less than 1
-        if (dw.distance(characterPos.x, characterPos.y, adjustedTargetPos.x, adjustedTargetPos.y) < 1) {
-            return [characterPos, adjustedTargetPos];
+
+        // Se a distância máxima for fornecida, verifica se estamos dentro dela
+        if (maxDistance !== null) {
+            const distanceToTarget = dw.distance(characterPos.x, characterPos.y, adjustedTargetPos.x, adjustedTargetPos.y);
+            // Se já estamos dentro da distância permitida, retorna o caminho direto
+            if (distanceToTarget <= maxDistance) {
+                return [characterPos, characterPos];
+            }
         }
 
         const openList = [];
@@ -747,7 +840,7 @@ const Util = {
 
         let iterations = 0;
 
-        // Create start node as a plain object
+        // Cria o nó inicial como um objeto simples
         const startNode = {
             pos: characterPos,
             g: 0,
@@ -761,34 +854,54 @@ const Util = {
             iterations++;
             if (iterations > SETTINGS.maxPathfindingIterations) {
                 console.log("Iteration limit reached. Aborting!");
-                return path.reverse(); // Return the path generated so far
+                return path.reverse(); // Retorna o caminho gerado até agora
             }
 
-            // Select the node with the lowest total cost (f)
+            // Seleciona o nó com o menor custo total (f)
             let currentNode = openList.reduce((prev, node) => node.f < prev.f ? node : prev);
 
-            // If the destination is reached, build the path
-            if (dw.distance(currentNode.pos.x, currentNode.pos.y, adjustedTargetPos.x, adjustedTargetPos.y) <= SETTINGS.pathStepSize) {
-                let node = currentNode;
-                while (node) {
-                    path.push(node.pos);
-                    node = node.parent;
-                }
-                path.reverse(); // Return the path from origin to destination
+            // Se houver uma distância máxima, verifica se o nó atual está dentro dela
+            if (maxDistance !== null) {
+                const currentDistanceToTarget = dw.distance(currentNode.pos.x, currentNode.pos.y, adjustedTargetPos.x, adjustedTargetPos.y);
 
-                // Ensure the last point is exactly the adjusted target position
-                if (path.length === 0 || (path[path.length - 1].x !== adjustedTargetPos.x || path[path.length - 1].y !== adjustedTargetPos.y)) {
-                    path.push(adjustedTargetPos); // Add adjusted destination point if not in path
-                }
+                // Verifica se o caminho até o alvo está bloqueado por itens
+                const hasClearSight = !Util.isPathBlockedByItems(currentNode.pos.x, currentNode.pos.y, adjustedTargetPos.x, adjustedTargetPos.y);
 
-                return path;
+                // Se o ponto está dentro da distância e o caminho está limpo, paramos a busca
+                if (currentDistanceToTarget <= maxDistance && hasClearSight) {
+                    let node = currentNode;
+                    while (node) {
+                        path.push(node.pos);
+                        node = node.parent;
+                    }
+                    path.reverse(); // Retorna o caminho do início até o ponto mais próximo
+
+                    return path;
+                }
+            } else {
+                // Se não houver distância máxima, verifica se chegamos ao alvo diretamente
+                if (dw.distance(currentNode.pos.x, currentNode.pos.y, adjustedTargetPos.x, adjustedTargetPos.y) <= SETTINGS.pathProximity) {
+                    let node = currentNode;
+                    while (node) {
+                        path.push(node.pos);
+                        node = node.parent;
+                    }
+                    path.reverse(); // Retorna o caminho do início até o destino
+
+                    // Certifica-se de que o último ponto é exatamente o destino ajustado
+                    if (path.length === 0 || (path[path.length - 1].x !== adjustedTargetPos.x || path[path.length - 1].y !== adjustedTargetPos.y)) {
+                        path.push(adjustedTargetPos); // Adiciona o destino ajustado se não estiver no caminho
+                    }
+
+                    return path;
+                }
             }
 
-            // Remove the current node from the open list and add it to the closed list
+            // Remove o nó atual da lista aberta e o adiciona à lista fechada
             openList.splice(openList.indexOf(currentNode), 1);
             closedList.push(currentNode);
 
-            // Sort directions based on proximity to the target
+            // Ordena as direções com base na proximidade ao alvo
             const sortedDirections = directions.slice().sort((a, b) => {
                 const distA = dw.distance(
                     currentNode.pos.x + a.x * SETTINGS.pathStepSize,
@@ -802,10 +915,10 @@ const Util = {
                     adjustedTargetPos.x,
                     adjustedTargetPos.y
                 );
-                return distA - distB; // Sort from closest to farthest
+                return distA - distB; // Ordena do mais próximo para o mais distante
             });
 
-            // Explore neighboring nodes
+            // Explora os nós vizinhos
             for (const direction of sortedDirections) {
                 const newPos = {
                     x: currentNode.pos.x + direction.x * SETTINGS.pathStepSize,
@@ -816,7 +929,7 @@ const Util = {
                     continue;
                 }
 
-                // Check if the new node is safe or already explored
+                // Verifica se o novo nó é seguro ou já foi explorado
                 if (!Util.isSafe(newPos) || closedList.find(node => node.pos.x === newPos.x && node.pos.y === newPos.y)) {
                     continue;
                 }
@@ -824,7 +937,7 @@ const Util = {
                 const gScore = currentNode.g + SETTINGS.pathStepSize;
                 let neighborNode = openList.find(node => node.pos.x === newPos.x && node.pos.y === newPos.y);
 
-                // If the neighbor is not in the open list, or the new path is cheaper
+                // Se o vizinho não estiver na lista aberta ou o novo caminho for mais barato
                 if (!neighborNode) {
                     const hScore = dw.distance(newPos.x, newPos.y, adjustedTargetPos.x, adjustedTargetPos.y);
                     neighborNode = {
@@ -844,8 +957,9 @@ const Util = {
         }
 
         console.log("No path found.");
-        return path; // Return the path generated so far or empty if no path was found
+        return path; // Retorna o caminho gerado até agora ou vazio se nenhum caminho foi encontrado
     },
+
 
 
     /**
@@ -907,7 +1021,16 @@ const Character = {
      * @returns {boolean} True if the character's HP is below the given percentage, otherwise false.
      */
     isHpBelowPercentage(percentage) {
-        return (dw.character.hp / dw.character.maxHp) < percentage;
+        return (dw.character.hp / dw.character.maxHp) <= percentage;
+    },
+
+    /**
+     * Checks if the character's HP is below a given percentage.
+     * @param {number} percentage - The threshold percentage (e.g., 0.5 for 50%).
+     * @returns {boolean} True if the character's HP is below the given percentage, otherwise false.
+     */
+    isHpAbovePercentage(percentage) {
+        return (dw.character.hp / dw.character.maxHp) >= percentage;
     },
 
     /**
@@ -943,6 +1066,14 @@ const Character = {
     },
 
     /**
+     * Checks if the character has the 'conservation' effect active.
+     * @returns {boolean} True if the character has the conservation effect, otherwise false.
+     */
+    hasBuff() {
+        return 'buff' in dw.character.fx;
+    },
+
+    /**
      * Checks if the character has the 'masochism' effect active.
      * @returns {boolean} True if the character has the masochism effect, otherwise false.
      */
@@ -956,6 +1087,15 @@ const Character = {
      */
     hasGraft() {
         return 'graft' in dw.character.fx;
+    },
+
+    
+    /**
+     * Checks if the character has the 'graft' effect active.
+     * @returns {boolean} True if the character has the graft effect, otherwise false.
+     */
+    hasExertion() {
+        return 'exertion' in dw.character.fx;
     },
 
     /**
@@ -992,10 +1132,11 @@ const Finder = {
             entity => 
                 (
                     dw.mdInfo[entity.md]?.isMonster || 
-                    dw.mdInfo[entity.md]?.isResource ||
+                    (CONFIG.getResources && dw.mdInfo[entity.md]?.isResource) ||
                     (dw.mdInfo[entity.md]?.type === "recycler" && entity.owner)
                 ) && 
-                !entity.isSafe &&
+                entity.z === dw.character.z &&
+                (!entity.isSafe || entity.owner === 1) &&
                 !dw.mdInfo[entity.md]?.canHunt
         );
     },
@@ -1018,52 +1159,6 @@ const Finder = {
     },
 
     /**
-     * Retrieves the closest monster that matches a given filter.
-     * @param {Function} filter - Optional filter function to apply.
-     * @returns {Object|null} The closest monster entity or null if none found.
-     */
-    getClosestMonster(filter) {
-        return Finder.getMonsters().find(filter) || null;
-    },
-
-    /**
-     * Retrieves the IDs of characters to follow from the protect list.
-     * @returns {Array<number>} Array of character IDs to follow.
-     */
-    getFollowCharacters() {
-        return Finder.getEntities().filter(entity => protectList.includes(entity.name)).map(entity => entity.id);
-    },
-
-    /**
-     * Retrieves the target entity to protect.
-     * @returns {Object|null} The protect target entity or null if none found.
-     */
-    getProtectTarget() {
-        return Finder.getEntities().find(entity => protectList.includes(entity.name)) || null;
-    },
-
-    /**
-     * Retrieves the target entity to heal.
-     * @returns {Object|null} The heal target entity or null if none found.
-     */
-    getHealTarget() {
-        return Finder.getEntities().find(entity => healList.includes(entity.name)) || null;
-    },
-
-    /**
-     * Retrieves the nearest monster that should be taunted based on its target.
-     * @returns {Object|null} The nearest monster to taunt, with skill info, or null if none found.
-     */
-    getNearestToTaunt() {
-        if (!SKILLS.taunt.enable) return null;
-        const enemy = Finder.getClosestMonster(entity => Finder.getFollowCharacters().includes(entity.targetId));
-        if (enemy && dw.canUseSkill(SKILLS.taunt.index, enemy.id)) {
-            return { ...enemy, toSkill: SKILLS.taunt.index };
-        }
-        return null;
-    },
-
-    /**
      * Retrieves monsters with scores, sorted by score, and filters out blocked ones.
      * @param {Function|boolean} [filter=false] - Optional filter function to apply.
      * @returns {Array<Object>|null} Array of monsters with scores, or null if none found.
@@ -1075,9 +1170,9 @@ const Finder = {
         return monsters.map(monster => {
             let score = 0;
             
-            if(dw.mdInfo[monster.md]?.isStation) {
+            if(CONFIG.recycleItems && dw.mdInfo[monster.md]?.isStation) {
                 const inventory = Misc.mapInventory()
-                if(inventory?.remove?.length > 0 || monster?.output.filter(e => e !== null)?.length >= 1 || monster?.powerOn !== 0)
+                if((inventory?.recycle?.length > 0 || monster?.output.filter(e => e !== null)?.length >= 1) || monster.powerOn === 1)
                     score += 50
                 else 
                     score -= 1000
@@ -1086,9 +1181,9 @@ const Finder = {
             // If the target is a monster
             if (dw.mdInfo[monster.md].isMonster) {
 
-                // to taunt
-                if(Finder.getFollowCharacters().includes(monster.targetId)) {
-                    score += SCORE.monster.targetCharacterBonus + 100
+
+                if(dw.c.mission && monster.missionId === dw.c.mission.id) {
+                    //score += SCORE.monster.missionIdScore
                 }
 
                 score += SCORE.monster.baseScore; // Apply base score for monsters
@@ -1100,16 +1195,17 @@ const Finder = {
                 if ([dw.character.id].includes(monster.targetId)) {
                     score += SCORE.monster.targetCharacterBonus; // Apply bonus if the monster is targeting the character
                 }
-                score += Util.distanceToTarget(monster) * SCORE.proximity.distanceMultiplier; // Apply unified distance-based score adjustment
+                score += (60 * Math.exp(-0.8 * Util.distanceToTarget(monster)));
+
 
                 if (monster.maxHp >= SCORE.monster.hpThreshold) {
-                    score += SCORE.monster.hpThresholScore; 
+                    //score += SCORE.monster.hpThresholScore; 
                 }
 
                 // Apply rare monster score
                 if (monster.r > 0) {
                     if (monster.r <= SCORE.monster.rareMonsterLimit && monster.maxHp <= SCORE.monster.rareMonsterHpThreshold) {
-                        score += monster.r * SCORE.monster.rareMonsterMultiplier; // Positive multiplier for rare monsters
+                       score += monster.r * SCORE.monster.rareMonsterMultiplier; // Positive multiplier for rare monsters
                     } else {
                         score -= monster.r * SCORE.monster.rareMonsterMultiplier; // Negative multiplier if not considered rare
                     }
@@ -1120,19 +1216,23 @@ const Finder = {
 
                 // Apply level difference score adjustment
                 if (SCORE.levelDifference.enabled) {
-                    const levelDifference = Math.abs(monster.lvl - dw.c.lvl);
-                    score += (levelDifference === 0) ? SCORE.levelDifference.sameLevelBonus
-                        : levelDifference * SCORE.levelDifference.differenceFactor;
+                    const levelDifference = Math.abs(monster.lvl - dw.c.lvl)
+
+                    if(levelDifference > 8) {
+                        score -= levelDifference * SCORE.levelDifference.differenceFactor;
+                    }
+                    else {
+                        score += levelDifference * SCORE.levelDifference.differenceFactor;
+                    }
                 }
             }
 
             // If the target is a resource
             if (dw.mdInfo[monster.md].isResource) {
                 score += SCORE.resource.baseScore; // Apply base score for resources
-                score += Array.from(dw.mdInfo[monster.md].tags || []).includes("wood") ? 5 : 0; // Apply base score for resources
-                score += Util.distanceToTarget(monster) * SCORE.proximity.distanceMultiplier; // Apply unified distance-based score adjustment
+                score += Array.from(dw.mdInfo[monster.md].tags || []).includes("wood") ? 15 : 15; // Apply base score for resources
+                score += (15 * Math.exp(-0.8 * Util.distanceToTarget(monster)));
                 score += Util.checkMonsterNearby(monster) * SCORE.proximity.nearbyMonster; // Apply adjustment for nearby monsters
-                score += Util.countMonstersAlongPath(monster) * SCORE.path.monstersAlongPath; // Apply adjustment for monsters along the path
             }
 
             return { monster, score };
@@ -1152,17 +1252,26 @@ const Finder = {
         // find first mosnter with path and return the monster and the path
         const target = monsters?.find(m => {
 
-            if(m.monster.owner && m.monster.md.includes("recycler")) {
-                const inventory = Misc.mapInventory()
-                if(inventory?.remove?.length === 0 && m?.monster?.output.filter(e => e !== null)?.length === 0 ) {
-                    return false
-                }
-            }
-
-
-            if(m.monster.targetId === dw.c.id || Finder.getFollowCharacters().includes(m.monster.targetId)) {
+            if(m.monster.targetId === dw.c.id) {
                 return true
             }
+
+            if(m.score < 0) return false
+
+            if(m.monster.owner && m.monster.md.includes("recycler")) {
+                if(m.score < 0) return false
+                // const inventory = Misc.mapInventory()
+                // if(
+                //     (
+                //         inventory?.recycle?.length === 0 && 
+                //         m?.monster?.output.filter(e => e !== null)?.length === 0) 
+                //         || !CONFIG.recycleItems 
+                //     ) {
+                //     return false
+                // }
+                return true
+            }
+
             
             const path = Movement.findPath(m.monster)
             if(path?.path?.length > 1) {
@@ -1183,7 +1292,6 @@ const Finder = {
                 score: target.score, 
                 toAttack: dw.mdInfo[target?.monster?.md]?.isMonster,
                 toGather: dw.mdInfo[target?.monster?.md]?.isResource,
-                toTaunt: Finder.getFollowCharacters().includes(target.monster.targetId)
             };
         }
         
@@ -1220,34 +1328,50 @@ const Action = {
     },
 
     /**
-     * Uses the graft skill if conditions are met (not being attacked, skill enabled, no graft effect).
-     */
-    useGraftSkill() {
-        if (
-            !Character.isBeingAttacked() &&
-            SKILLS.graft.enable &&
-            !Character.hasGraft()
-        ) {
-            if (dw.canUseSkill(SKILLS.graft.index, dw.character.id)) {
-                dw.useSkill(SKILLS.graft.index, dw.character.id);
-            }
-        }
-    },
-
-    /**
      * Uses the heal skill if conditions are met (not casting, not being attacked, skill enabled, HP below a threshold).
      */
     useHealSkill() {
         if (
             (SKILLS.heal.withMasochism ? !Character.hasMasochism() : true) && 
+            (SKILLS.heal.withGraft ? !Character.hasGraft() : true) && 
+            (SKILLS.heal.withExertion ? !Character.hasExertion() : true) && 
             !Character.isCasting() &&
             !Character.isBeingAttacked() &&
             SKILLS.heal.enable &&
-            Character.isHpBelowPercentage(SKILLS.heal.hpThreshold)
+            Character.isHpBelowPercentage(SKILLS.heal.hpThreshold) &&
+            Character.isHpAbovePercentage(SKILLS.heal.hpThresholdMin)
         ) {
             if (dw.canUseSkill(SKILLS.heal.index, dw.character.id)) {
                 DEBUG.log(`Using <span style="color: hotpink">Heal</span>. Life below <span style="color: pink">${SKILLS.heal.hpThreshold * 100}%</span>`);
                 dw.useSkill(SKILLS.heal.index, dw.character.id);
+            }
+        }
+    },
+
+     /**
+     * Uses the heal skill if conditions are met (not casting, not being attacked, skill enabled, HP below a threshold).
+     */
+    useBuff() {
+        if (
+            !Character.isCasting() &&
+            !Character.isBeingAttacked() &&
+            !Character.hasBuff() &&
+            SKILLS.buff.enable
+        ) {
+            if (dw.canUseSkill(SKILLS.buff.index, dw.character.id)) {
+                DEBUG.log(`Using <span style="color: hotpink">Buff</span>.`);
+                dw.useSkill(SKILLS.buff.index, dw.character.id);
+            }
+        }
+    },
+
+    useTaunt(target) {
+         if (
+            SKILLS.taunt.enable
+        ) {
+            if (dw.canUseSkill(SKILLS.taunt.index, target.id)) {
+                DEBUG.log(`Using <span style="color: hotpink">Taunt</span>.`);
+                dw.useSkill(SKILLS.taunt.index, target.id);
             }
         }
     },
@@ -1277,26 +1401,9 @@ const Action = {
      * @returns {boolean} True if more than one monster is in range, otherwise false.
      */
     shouldUseAoe(x, y) {
-        return Finder.getMonsters().filter(monster => dw.distance(x, y, monster.x, monster.y) < SKILLS.aoe.range).length > 1;
-    },
-
-    /**
-     * Uses a ranged attack on a target if within range and not currently casting.
-     * @param {Object} target - The target to attack.
-     * @returns {boolean} True if the ranged attack was used, otherwise false.
-     */
-    useRangedAttack(target) {
-        if (
-            Util.distanceToTarget(target) <= SKILLS.arrow.range &&
-            !Character.isCasting() &&
-            dw.canUseSkill(SKILLS.arrow.index, target.id)
-        ) {
-            DEBUG.log("Using ranged attack skill.");
-            dw.stop();
-            dw.useSkill(SKILLS.arrow.index, target.id);
-            return true;
-        }
-        return false;
+        return Finder.getMonsters().filter(monster => 
+            dw.mdInfo[monster.md]?.isMonster && 
+            dw.distance(x, y, monster.x, monster.y) < SKILLS.aoe.area).length > 1;
     },
 
     /**
@@ -1307,23 +1414,32 @@ const Action = {
     followAndAttack(target, needRecovery = false) {
         dw.setTarget(target.id);
         const distToTarget = Util.distanceToTarget(target);
+        const range = SKILLS.arrow.enable ? SKILLS.arrow.range : SKILLS.attack.range
 
-        // Use ranged attack if possible
-        if (SKILLS.arrow.enable && !Character.isBeingAttacked()) {
-            if (Character.isCasting() || Action.useRangedAttack(target)) return;
-        }
+        if(!Character.isCasting()) {
 
         // Use melee attack or AOE if in range
-        if (distToTarget <= SKILLS.attack.range && !needRecovery) {
+        if (distToTarget <= range && !needRecovery) {
             let attackSkill = SKILLS.attack.index;
+            let label = 'Attacking'
 
+
+
+            if(SKILLS.arrow.enable) {
+                attackSkill = SKILLS.arrow.index
+                label = 'Distant Attacking'
+
+            }
+ 
             // Use conservation skill if needed
-            if (!Character.hasConservation() && SKILLS.conservation.enable && Character.isHpBelowPercentage(SKILLS.conservation.hpThreshold)) {
+            if (!Character.hasConservation() && SKILLS.conservation.enable && Character.isHpBelowPercentage(SKILLS.conservation.hpThreshold) && target.hp === target.maxHp) {
+                label = 'Conservation Attacking'
                 attackSkill = SKILLS.conservation.index;
             }
 
-            if(SKILLS.attack_exertion.enable && target.r > 0 && target.hp === target.maxHp) {
-                attackSkill = SKILLS.attack_exertion.index
+            if(SKILLS.exertion.enable && target.maxHp >= SKILLS.exertion.hpThreshold  ) {
+                label = 'Exertion Attacking'
+                attackSkill = SKILLS.exertion.index
             }
 
             // Use AOE skill if multiple enemies are in range
@@ -1332,10 +1448,10 @@ const Action = {
                 Action.shouldUseAoe(target.x, target.y) && 
                 dw.canUseSkill(SKILLS.aoe.index, target.id)
             ) {
-                DEBUG.log(`<span style="color: tomato;">AOE Attacking</span> <span style="color: cyaN">${dw.mdInfo[target.md].name}</span>`);
+                DEBUG.log(`<span style="color: tomato;">AOE ${label}</span> <span style="color: cyaN">${dw.mdInfo[target.md].name}</span>`);
                 dw.useSkill(SKILLS.aoe.index, target.x, target.y);
-            } else if (SKILLS.attack.enable && dw.canUseSkill(attackSkill, target.id)) {
-                DEBUG.log(`<span style="color: tomato;">Attacking</span> <span style="color: cyan">${dw.mdInfo[target.md].name}</span>`);
+            } else if (dw.canUseSkill(attackSkill, target.id)) {
+                DEBUG.log(`<span style="color: tomato;">${label}</span> <span style="color: cyan">${dw.mdInfo[target.md].name}</span>`);
                 dw.useSkill(attackSkill, target.id);
             }
         } else {
@@ -1349,22 +1465,6 @@ const Action = {
                 Movement.moveCloserToTarget(target)
             }
         }
-    },
-
-    /**
-     * Follows the target and uses a specific skill on it.
-     * @param {Object} target - The target to use the skill on.
-     * @param {number} skill - The skill index to use.
-     */
-    followAndUseSkill(target, skill) {
-        dw.setTarget(target.id);
-        console.log("hm")
-        if (dw.canUseSkill(skill, target.id)) {
-            dw.move(target.x, target.y);
-            dw.useSkill(skill, target.id);
-            DEBUG.log(`Using skill on target: <span style="color: cyan">${dw.mdInfo[target.md].name}</span>`);
-        } else {
-            dw.move(target.x, target.y);
         }
     },
 };
@@ -1374,6 +1474,39 @@ const Action = {
  * @namespace
  */
 const Movement = {
+
+    followAllied() {
+        if(CONFIG.followAllied) {
+            const allied = Finder.getEntities().find(e => protectList.includes(e.name))
+            if(allied) {
+                DEBUG.log(`<span style="color: lime">Following</span> <span style="color: cyan">${allied?.name}</span>`);
+                dw.move(allied.x, allied.y)
+                return true
+            }
+        }
+    },
+
+    tauntAttacking() {
+        if(CONFIG.followAllied) {
+            const entities = Finder.getEntities()
+            const allied = entities.find(e => protectList.includes(e.name))
+            console.log(allied)
+            if(allied) {
+                const monster = entities.find(e => 
+                    e.targetId === allied.id || 
+                    e.targetId == dw.c.id || 
+                    allied.targetId === e.id
+                )
+                if(monster) {
+                    DEBUG.log(`<span style="color: lime">Moving</span> to <span style="color: lime">Taunt</span>`);
+                    dw.move(monster.x, monster.y)
+                    Action.useTaunt(monster)
+                    return true
+                }
+            }
+            }
+    },
+
     /**
      * Check the zone level and trigger suicide if necessary.
      */
@@ -1398,10 +1531,12 @@ const Movement = {
      */
     checkCharacterIdle() {
         const currentTime = Date.now();
-        if (dw.distance(dw.character.x, dw.character.y, lastPosition.x, lastPosition.y) <= 0.5 && currentTime - lastMoveTime >= 1000 * SETTINGS.idleTime) {
-            DEBUG.log("Character idle for 3 minute, committing suicide.");
-            dw.suicide();
-            lastMoveTime = currentTime;
+        if (dw.distance(dw.character.x, dw.character.y, lastPosition.x, lastPosition.y) <= 1) {
+            if(currentTime - lastMoveTime >= 1000 * SETTINGS.idleTime) {
+                DEBUG.log("Character idle for 3 minute, committing suicide.");
+                dw.suicide();
+                lastMoveTime = currentTime;
+            }
         } else {
             lastPosition = { x: dw.character.x, y: dw.character.y };
             lastMoveTime = currentTime;
@@ -1417,21 +1552,21 @@ const Movement = {
 
         
         if (target?.path) {
-            DEBUG.log(`<span style="color: lime">Pathfinding</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
+            // DEBUG.log(`<span style="color: lime">Pathfinding</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
             x = target.path[1].x
             y = target.path[1].y
             if(dw.mdInfo[target.md].isMonster) {
                 Movement.getCloserPath(target.path);
             }
         } else {
-            DEBUG.log(`<span style="color: lime">Moving</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
+            // DEBUG.log(`<span style="color: lime">Moving</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
             if(dw.mdInfo[target.md].isMonster) {
                 Movement.getCloserMove(target);
             }
         }
 
         if(safeDistance !== 0) {
-            DEBUG.log(`<span style="color: lime">Safe Positioning</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
+            // DEBUG.log(`<span style="color: lime">Safe Positioning</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
             const safePoint = Util.calculateSafePosition({ ...target, x, y}, safeDistance)
             x = safePoint.x
             y = safePoint.y
@@ -1458,7 +1593,7 @@ const Movement = {
         const nextPosition = path[1];
         const distanceNext = dw.distance(nextPosition.x, nextPosition.y, dw.c.x, dw.c.y);
 
-        if (SKILLS.dash.enable && distanceNext >= SKILLS.dash.minRange && distanceNext <= SKILLS.dash.range && path.length === 2) {
+        if (SKILLS.dash.enable && distanceNext >= SKILLS.dash.minRange && distanceNext <= SKILLS.dash.range && path.length === 2 && dw.character.hp === dw.character.maxHp) {
             if (dw.canUseSkill(SKILLS.dash.index, dw.c.id)) {
                 DEBUG.log(`<span style="color: yellow">Dashing</span> to <span style="color: yellow">${Math.round(nextPosition.x)}</span>,<span style="color: yellow">${Math.round(nextPosition.y)}</span> (${Math.round(distanceNext)})`);
                 dw.useSkill(SKILLS.dash.index, nextPosition.x, nextPosition.y);
@@ -1470,7 +1605,7 @@ const Movement = {
         const distanceTotal = Util.calculateTotalDistance(path);
         const distanceDiff = distanceTotal - distanceLast;
 
-        if (SKILLS.teleport.enable && distanceLast >= SKILLS.teleport.minRange && distanceLast <= SKILLS.teleport.range && distanceDiff > SKILLS.teleport.minSavedRange) {
+        if (SKILLS.teleport.enable && distanceLast >= SKILLS.teleport.minRange && distanceLast <= SKILLS.teleport.range && distanceDiff > SKILLS.teleport.minSavedRange && dw.character.hp === dw.character.maxHp) {
             if (dw.canUseSkill(SKILLS.teleport.index, dw.c.id)) {
                 DEBUG.log(`<span style="color: yellow">Teleporting</span> to <span style="color: yellow">${Math.round(lastPosition.x)}</span>,<span style="color: yellow">${Math.round(lastPosition.y)}</span> (${Math.round(distanceLast)})`);
                 dw.useSkill(SKILLS.teleport.index, lastPosition.x, lastPosition.y);
@@ -1486,41 +1621,20 @@ const Movement = {
     getCloserMove(target) {
         const distanceToTarget = dw.distance(target.x, target.y, dw.c.x, dw.c.y);
 
-        if (SKILLS.dash.enable && distanceToTarget >= SKILLS.dash.minRange && distanceToTarget <= SKILLS.dash.range) {
+        if (SKILLS.dash.enable && distanceToTarget >= SKILLS.dash.minRange && distanceToTarget <= SKILLS.dash.range  && dw.character.hp === dw.character.maxHp) {
             if (dw.canUseSkill(SKILLS.dash.index, dw.c.id)) {
                 DEBUG.log(`<span style="color: yellow">Dashing</span> to <span style="color: yellow">${Math.round(target.x)}</span>,<span style="color: yellow">${Math.round(target.y)}</span> (${Math.round(distanceToTarget)})`);
                 dw.useSkill(SKILLS.dash.index, target.x, target.y);
             }
         }
 
-        if (SKILLS.teleport.enable && distanceToTarget >= SKILLS.teleport.minRange && distanceToTarget <= SKILLS.teleport.range) {
+        if (SKILLS.teleport.enable && distanceToTarget >= SKILLS.teleport.minRange && distanceToTarget <= SKILLS.teleport.range  && dw.character.hp === dw.character.maxHp) {
             if (dw.canUseSkill(SKILLS.teleport.index, dw.c.id)) {
                 DEBUG.log(`<span style="color: yellow">Teleporting</span> to <span style="color: yellow">${Math.round(target.x)}</span>,<span style="color: yellow">${Math.round(target.y)}</span> (${Math.round(distanceToTarget)})`);
                 dw.useSkill(SKILLS.teleport.index, target.x, target.y);
                 dw.stop();
             }
         }
-    },
-
-    /**
-     * Moves the character randomly in one of four directions.
-     */
-    randomMove() {
-        if (!CONFIG.enableRandomMovement) return;
-
-        const direction = Math.floor(Math.random() * 4);
-        let newX = dw.character.x;
-        let newY = dw.character.y;
-
-        switch (direction) {
-            case 0: newX += 2; break;
-            case 1: newX -= 2; break;
-            case 2: newY += 2; break;
-            case 3: newY -= 2; break;
-        }
-
-        DEBUG.log(`Moving randomly to [${newX}, ${newY}]`);
-        dw.move(newX, newY);
     },
 
     /**
@@ -1551,40 +1665,6 @@ const Movement = {
     },
 
     /**
-     * Follows a protected allied character.
-     */
-    followAllied() {
-        if (!CONFIG.followAlliedCharacter) return;
-
-        const target = Finder.getProtectTarget();
-        if (target) {
-            DEBUG.log(`Following allied character: ${target.name}`);
-            dw.move(target.x, target.y);
-        }
-    },
-
-    /**
-     * Follows and heals an allied character if needed.
-     */
-    followAndHealAllied() {
-        if (!CONFIG.healAndFollowAllied) return;
-
-        const target = Finder.getHealTarget();
-        if (target) {
-            const distToTarget = Util.distanceToTarget(target);
-            DEBUG.log(`Attempting to heal ${target.name}. Current distance: ${distToTarget}`);
-            if (target.hp <= target.maxHp * 0.9) {
-                if (dw.canUseSkill(SKILLS.heal.index, target.id)) {
-                        dw.useSkill(SKILLS.heal.index, target.id);
-                        DEBUG.log(`Healing ${target.name}`);
-                } else {
-                        DEBUG.log(`${target.name} is healthy, no healing needed.`);
-                }
-            }
-        }
-    },
-
-    /**
      * Moves the character to a resource and gathers it if within range.
      * @param {Object} resource - The resource to gather.
      */
@@ -1599,13 +1679,14 @@ const Movement = {
         }
     },
 
-    /**
+   /**
      * Handles pathfinding for safe movement towards monsters based on score.
      */
     findPath(target) {
-        const bestPath = Util.generateSafePath(dw.c, target); // Generate the safest path to the target
+        const maxDistance = dw.mdInfo[target.md]?.isMonster && SKILLS.arrow.enable ? SKILLS.arrow.range : null
+        const bestPath = Util.generateSafePath(dw.c, target, maxDistance); // Generate the safest path to the target
         if (bestPath.length > 0) {
-            return { path: Util.optimizePath(bestPath), target }; // Optimize the path for better movement
+            return { path: CONFIG.optimizePath ? Util.optimizePath(bestPath) : bestPath, target }; // Optimize the path for better movement
         } else {
             return [];
         }
@@ -1801,7 +1882,13 @@ const Misc = {
     // Check if item is armor
     isArmor(item) {
         const metaData = dw.mdInfo[item.md];
-        return metaData?.isArmor || false;
+        return (metaData?.isArmor && !item?.md?.includes("belt")) || false;
+    },
+
+     // Check if item is armor
+    isBelt(item) {
+        const metaData = dw.mdInfo[item.md];
+        return (metaData?.isArmor && item?.md?.includes("belt")) || false;
     },
 
     // Check if item is an accessory
@@ -1809,6 +1896,7 @@ const Misc = {
         const metaData = dw.mdInfo[item.md];
         return metaData?.isAccessory || false;
     },
+    
 
     // Check if item is a rune
     isRune(item) {
@@ -1817,9 +1905,9 @@ const Misc = {
     },
 
     // Check if item is passive
-    isPassive(item) {
+    isBook(item) {
         const metaData = dw.mdInfo[item.md];
-        return Array.from(metaData?.tags || []).includes("passive");
+        return Array.from(metaData?.tags || []).includes("book");
     },
 
     // Condition functions to evaluate against the item
@@ -1909,12 +1997,14 @@ const Misc = {
 
     recycleItem(index) {
         const spot = Misc.getRecyclerSpotToMove()
-        if(spot && spot.index != -1) {
-            dw.log(`Recycling item ${index}`)
-            dw.moveItem("bag", index, "storage", spot.index, null, spot.id)
-        }
-        else {
-            dw.log("Storage is full.")
+        if(spot) {
+            if(spot.index != -1) {
+                dw.log(`Recycling item ${index}`)
+                dw.moveItem("bag", index, "storage", spot.index, null, spot.id)
+            }
+            else {
+                dw.log("Storage is full.")
+            }
         }
     },
 
@@ -1945,8 +2035,77 @@ const Misc = {
         }
     },
 
+     learnSkills() {
+    const passives = dw.c.learnedPassives;
+    const skills = dw.c.learnedSkills;
+    const stats = dw.c.learnedStats;
+
+    // Itera sobre cada item do inventário
+    dw.character.inventory.forEach((item, index) => {
+        if (!item) return; // Ignora itens inválidos
+
+        if (Misc.isBook(item)) {
+            const itemName = item.name || `Item ${index}`;
+
+            // Verifica os mods do item, que agora é um objeto
+            for (let modName in item.mods) {
+                const modTier = item.mods[modName]; // O tier do mod
+                let reason = '';
+                let color = 'red'; // Cor padrão para mods excluídos
+
+
+                console.log(modName, dw.itemModValue(item, modName))
+
+                // Verifica se o mod pertence aos passives
+                if (passives[modName]) {
+                    if (modTier > passives[modName].tier) {
+                        reason = `<span style="color: green;">${modTier}</span> > <span style="color: red;">${passives[modName].tier}</span>`;
+                        color = 'green'; // Cor verde para mods melhores
+                        DEBUG.log(`passive: ${modName}: ${modTier} | ${reason}`);
+                    } else {
+                        reason = `<span style="color: red;">${modTier}</span> <= <span style="color: green;">${passives[modName].tier}</span>`;
+                    }
+
+                }
+                // Verifica se o mod pertence aos skills (habilidades)
+                else if (skills[modName]) {
+                    if (modTier > skills[modName].tier) {
+                        reason = `<span style="color: green;">${modTier}</span> > <span style="color: red;">${skills[modName].tier}</span>`;
+                        color = 'green'; // Cor verde para mods melhores
+                        DEBUG.log(`${modName}: ${modTier} | ${reason}`);
+                    } else {
+                        reason = `skills: <span style="color: red;">${modTier}</span> <= <span style="color: green;">${skills[modName].tier}</span>`;
+                    }
+
+                }
+                // Verifica se o mod pertence aos stats (estatísticas)
+                else if (stats[modName]) {
+                    console.log(stats[modName])
+                                    console.log("mine:", modName, dw.itemModValue(stats[modName], modName))
+
+                    if (modTier > stats[modName].tier) {
+                        reason = `<span style="color: green;">${modTier}</span> > <span style="color: red;">${stats[modName].tier}</span>`;
+                        color = 'green'; // Cor verde para mods melhores
+                        DEBUG.log(`${modName}: ${modTier} | ${reason}`);
+                    } else {
+                        reason = `stats: <span style="color: red;">${modTier}</span> <= <span style="color: green;">${stats[modName].tier}</span>`;
+                    }
+
+                } else {
+                    reason = `mod ${modName} is new!`;
+                    DEBUG.log(`${modName}: ${modTier} | ${reason}`);
+
+                }
+
+            }
+        }
+    });
+}
+,
+
     mapInventory() {
         const itemsToCombine = [];
+        const itemsToRecycle = [];
         const itemsToRemove = [];
 
         // Helper function to log evaluation results
@@ -1968,8 +2127,7 @@ const Misc = {
             // Format mods with their values in white
             const modDetails = mods.map(mod => `${mod}: ${item.mods[mod]}`).join(', ');
 
-            // Log the exclusion using DEBUG.log with color and reason
-            DEBUG.log(`<span style="color: ${color};">${itemName}</span> (${modDetails}) excluded because: ${reason}`);
+            // DEBUG.log(`<span style="color: ${color};">${itemName}</span> (${modDetails}) excluded because: ${reason}`);
         };
 
         // Loop through each item in the inventory
@@ -2023,7 +2181,17 @@ const Misc = {
                 logEvaluation(item, result, 'Weapon conditions evaluated');
                 if (result) return;
                 logExclusion(item, mods, 'Weapon conditions failed');
-                itemsToRemove.push(index); // Mark for removal if conditions fail
+                itemsToRecycle.push(index); // Mark for removal if conditions fail
+            }
+
+            // Evaluate conditions for belts
+            else if (Misc.isBelt(item)) {
+                const { conditions } = ITEMS.belt;
+                const result = Misc.evaluateConditions(item, conditions, ITEMS.belt.mods);
+                logEvaluation(item, result, 'Belt conditions evaluated');
+                if (result) return;
+                logExclusion(item, mods, 'Belt conditions failed');
+                itemsToRecycle.push(index); // Mark for removal if conditions fail
             }
 
             // Evaluate conditions for armor
@@ -2033,7 +2201,7 @@ const Misc = {
                 logEvaluation(item, result, 'Armor conditions evaluated');
                 if (result) return;
                 logExclusion(item, mods, 'Armor conditions failed');
-                itemsToRemove.push(index); // Mark for removal if conditions fail
+                itemsToRecycle.push(index); // Mark for removal if conditions fail
             }
 
             // Evaluate conditions for accessories
@@ -2043,39 +2211,36 @@ const Misc = {
                 logEvaluation(item, result, 'Accessory conditions evaluated');
                 if (result) return;
                 logExclusion(item, mods, 'Accessory conditions failed');
-                itemsToRemove.push(index); // Mark for removal if conditions fail
-            }
-
-            // Evaluate conditions for runes
-            else if (Misc.isRune(item)) {
-                const { conditions } = ITEMS.rune;
-                const result = Misc.evaluateConditions(item, conditions, []);
-                logEvaluation(item, result, 'Rune socket conditions evaluated');
-                if (result) return;
-                logExclusion(item, mods, 'Rune conditions failed');
-                itemsToRemove.push(index); // Mark for removal if conditions fail
+                itemsToRecycle.push(index); // Mark for removal if conditions fail
             }
 
             // Evaluate conditions for passives
-            else if (Misc.isPassive(item)) {
-                const { conditions } = ITEMS.passive;
-                const result = Misc.evaluateConditions(item, conditions, ITEMS.passive.mods);
-                logEvaluation(item, result, 'Passive conditions evaluated');
-                if (result) return;
-                logExclusion(item, mods, 'Passive conditions failed');
-                itemsToRemove.push(index); // Mark for removal if conditions fail
+            else if (Misc.isBook(item)) {
+                // const { conditions } = ITEMS.passive;
+                // const result = Misc.evaluateConditions(item, conditions, ITEMS.passive.mods);
+                // logEvaluation(item, result, 'Passive conditions evaluated');
+                // if (result) return;
+                // logExclusion(item, mods, 'Passive conditions failed');
+                // itemsToRecycle.push(index); // Mark for removal if conditions fail
             }
 
             // Handle combinable resources
-            else if (ITEMS.combine.includes(item.md) || dw.mdInfo[item.md]?.isMat) {
+            else if (ITEMS.combine.includes(item.md)) {
                 logEvaluation(item, true, 'Item marked for combining');
                 itemsToCombine.push(index);
+            }
+            
+            // Handle combinable resources
+            if (ITEMS.remove.includes(item.md)) {
+                logEvaluation(item, true, 'Item marked for removal');
+                itemsToRemove.push(index);
             }
         });
 
         return {
-            remove: itemsToRemove,
-            combine: itemsToCombine
+            recycle: itemsToRecycle,
+            combine: itemsToCombine,
+            remove: itemsToRemove
         }
     },
 
@@ -2083,34 +2248,141 @@ const Misc = {
      * Cleans the inventory by removing unwanted items, combining resources, and sorting the inventory.
      * Items are classified by mod quality, mod count, and specific mod criteria.
      */
-    cleanInventory() {
-        const { remove, combine } = Misc.mapInventory()
+   cleanInventory() {
+    let inventory = Misc.mapInventory();
 
-        // Remove marked items
-        // if (CONFIG.removeItems && remove.length > 0) {
-            // remove.forEach(inventoryIndex => dw.deleteItem(inventoryIndex));
-        // }
-
-        if (CONFIG.recycleItems && remove.length > 0) {
-            remove.forEach(inventoryIndex => {
-                Misc.recycleItem(inventoryIndex)
-            });
-        }
-
-        // Combine resources
-        if (CONFIG.combineItems && combine.length > 0) {
-            dw.combineItems(combine);
-        }
-
-        // Sort inventory after cleaning
-        if (CONFIG.sortItems) {
-            dw.sortInventory();
-        }
-
-        Misc.recyclerTurnOn()
-        Misc.recyclerCollect()
+     if (CONFIG.removeItems && inventory.remove.length > 0) {
+        inventory.remove.forEach(inventoryIndex => dw.deleteItem(inventoryIndex));
+        return;
     }
 
+    inventory = Misc.mapInventory();
+
+     if (CONFIG.combineItems && inventory.combine.length > 0) {
+        dw.combineItems(inventory.combine);
+    }   
+
+    inventory = Misc.mapInventory();
+
+    if (CONFIG.recycleItems && inventory.recycle.length > 0) {
+        inventory.recycle.forEach(inventoryIndex => {
+            Misc.recycleItem(inventoryIndex);
+        });
+
+        Misc.recyclerTurnOn();
+    }
+
+    Misc.recyclerCollect();
+
+    inventory = Misc.mapInventory();
+
+    if (CONFIG.sortItems && inventory.recycle.length === 0) {
+        dw.sortInventory();
+    }
+    },
+
+    // Função para calcular os pontos de plantio dentro de um plot
+ calculateTreePlantingPoints(plot) {
+    const treeSpacingX = 1; // Espaçamento entre as árvores
+    const treeSpacingY = 0.5; // Espaçamento entre as árvores
+    const startOffset = 0.25; // Ponto inicial dentro do plot
+    let treePoints = [];
+
+    // Percorrer o plot e calcular os pontos de plantio
+    for (let x = startOffset; x < plot.w; x += treeSpacingX) {
+        for (let y = startOffset; y < plot.h; y += treeSpacingY) {
+            treePoints.push({ x: plot.x + x, y: plot.y + y });
+        }
+    }
+
+    return treePoints;
+},
+
+// Função para verificar se o ponto colide com alguma entidade existente
+ isPointCollidingWithEntities(point, entities, treeHitbox) {
+    for (const e of entities) {
+        const hitbox = dw.getHitbox(e.md); // Obtem a hitbox da entidade
+
+        if (hitbox) {
+            const entityX = e.x;
+            const entityY = e.y;
+
+            const hitboxWidth = hitbox.w;
+            const hitboxHeight = hitbox.h;
+
+            // Calcular os limites da hitbox
+            const left = entityX - hitboxWidth / 2;
+            const right = entityX + hitboxWidth / 2;
+            const top = entityY - hitboxHeight;
+            const bottom = entityY;
+
+            // Verificar se o ponto (com o hitbox da nova árvore) colide com a hitbox da entidade
+            const treeLeft = point.x - treeHitbox.w / 2;
+            const treeRight = point.x + treeHitbox.w / 2;
+            const treeTop = point.y - treeHitbox.h;
+            const treeBottom = point.y;
+
+            if (
+                treeRight > left &&
+                treeLeft < right &&
+                treeBottom > top &&
+                treeTop < bottom
+            ) {
+                return true; // Colisão detectada
+            }
+        }
+    }
+
+    return false; // Sem colisão
+},
+
+// Função para calcular todos os pontos de plantio válidos para todos os plots
+ getAllTreePlantingPoints() {
+    let allTreePoints = [];
+
+    // Definir o hitbox da árvore que será plantada (ajustável)
+    const treeHitbox = { w: 0.5, h: 0.5 }; // Por exemplo, 0.5x0.5 unidades
+    // Iterar sobre todos os plots e calcular os pontos de cada um
+    for (const plot of dw.account.plots) {
+        const plotTreePoints = Misc.calculateTreePlantingPoints(plot);
+
+        // Filtrar apenas os pontos que não colidem com entidades e hitboxes existentes
+        const validPoints = plotTreePoints.filter(point => !Misc.isPointCollidingWithEntities(point, dw.entities, treeHitbox));
+
+        allTreePoints.push(...validPoints); // Adiciona os pontos válidos ao array principal
+    }
+
+    return allTreePoints;
+},
+
+    plantTree() {
+        if(CONFIG.plantTree) {
+
+            const points = Misc.getAllTreePlantingPoints();
+
+            const index = dw.c.inventory.findIndex(e => e?.md === "physmaple1"); 
+        
+
+            if (points.length === 0) {
+                return;
+            }
+
+            if (index === -1) {
+                return;
+            }
+
+            const nextPoint = points[0]; // Pega o próximo ponto para plantar a árvore
+            const currentX = dw.c.x; // Posição atual do personagem
+            const currentY = dw.c.y;
+
+            const distanceToNextPoint = dw.distance(currentX, currentY, nextPoint.x, nextPoint.y); 
+            if (distanceToNextPoint > 2) {
+                dw.move(nextPoint.x, nextPoint.y); // Mover o personagem até o ponto
+            } else {
+                dw.placeStation(index, nextPoint.x, nextPoint.y)
+            }
+        }
+    }
 };
 
 
@@ -2118,19 +2390,20 @@ const Misc = {
  * Event handling and game loop
  */
 const eventPriority = [
+    Misc.plantTree,
     Movement.checkCharacterIdle,
     Movement.checkTerrain,
     Movement.checkZoneLevel,
     Misc.cleanInventory,
+    Action.useBuff,
+    Action.useShieldSkill,
     Action.useHealSkill,
     Action.useHealAlternativeSkill,
-    Action.useGraftSkill,
-    Action.useShieldSkill,
+    Movement.tauntAttacking,
+    Movement.followAllied,
     Finder.getNextMonster,
     Movement.moveShrub,
     Movement.moveMission,
-    Movement.followAllied,
-    Movement.followAndHealAllied,
     Movement.exploreNewAreas
 ];
 
@@ -2146,19 +2419,13 @@ function handleGameEvents() {
         const needRecovery = CONFIG.enableRecoveryDistance && 
                                         target.toAttack && 
                                         attackers.length === 0 && 
-                                        (dw.character.hp !== dw.character.maxHp)
+                                        (Character.isHpBelowPercentage(0.5))   
 
-                                        
 
-        // Handle skill-based actions
-        if(target.toTaunt) {
-            Action.followAndUseSkill(target, SKILLS.taunt.index)
-        }
-        else if (target.toSkill >= 0) {
-            Action.followAndUseSkill(target, target.toSkill);
-        }
+
+
         // Handle attack actions
-        else if (target.toAttack) {
+        if (target.toAttack) {
             Action.followAndAttack(target, needRecovery);
         }
         // Handle gathering actions
@@ -2180,263 +2447,343 @@ function handleGameEvents() {
  * Main game loop that continuously checks for events to handle.
  */
 function gameLoop() {
-    if (IS_ACTIVE) {
-        handleGameEvents();
+    try {
+        if (IS_ACTIVE) {
+            handleGameEvents();
+        }
+        setTimeout(gameLoop, SETTINGS.gameLoopInterval); // Re-run the loop every 250ms
+    } catch (error) {
+        dw.log(error)
     }
-    setTimeout(gameLoop, 300); // Re-run the loop every 250ms
 }
 
 gameLoop();
 
-dw.on('drawUnder', (ctx) => {
-    function drawArrow(fromX, fromY, toX, toY) {
-    const headLength = 15; // Tamanho da cabeça da seta
-    const dx = toX - fromX;
-    const dy = toY - fromY;
-    const angle = Math.atan2(dy, dx); // Calcula o ângulo da linha
 
-    // Desenha a linha da seta (corpo)
-    ctx.beginPath();
-    ctx.moveTo(fromX, fromY);
-    ctx.lineTo(toX, toY);
-    ctx.stroke(); // Necessário para desenhar a linha
+dw.on("drawOver", ctx => {
+    if (!DRAWING.grid) return false;
 
-    // Desenha a "cabeça" da seta
-    ctx.beginPath();
-    ctx.moveTo(toX, toY);
-    ctx.lineTo(
-        toX - headLength * Math.cos(angle - Math.PI / 6),
-        toY - headLength * Math.sin(angle - Math.PI / 6)
-    );
-    ctx.lineTo(
-        toX - headLength * Math.cos(angle + Math.PI / 6),
-        toY - headLength * Math.sin(angle + Math.PI / 6)
-    );
-    ctx.lineTo(toX, toY); // Fecha a cabeça da seta
-    ctx.stroke(); // Necessário para desenhar a cabeça da seta
-}
+    ctx.lineWidth = 0.5;
+    const gridSpacing = [0.125, 0.25, 0.5, 1]; // Different grid spacings
+    const gridColors = ['#0000FF45', '#00FF0045', '#FF000045', '#FF000045']; // Colors for each grid level
+
+    const characterX = dw.c.x;
+    const characterY = dw.c.y;
+
+    const gridRadius = 10; // Define the grid radius around the character
+
+    // Function to align grids properly
+    function alignGridPosition(value, spacing) {
+        return Math.floor(value / spacing) * spacing;
+    }
+
+    // Function to check if a point is blocked
+    function isPointBlocked(point) {
+        const terrainSurface = dw.getTerrainAt(point.x, point.y, 0);
+        const terrainUnderground = dw.getTerrainAt(point.x, point.y, -1);
+
+        // Check if terrain is blocking or if any items block the path
+        return terrainSurface !== 0 || terrainUnderground < 1;
+    }
+
+    // Loop through each grid level
+    gridSpacing.forEach((spacing, index) => {
+        const color = gridColors[index];
+        ctx.strokeStyle = color;
+
+        // Adjust the loop range to ensure coverage across the entire grid
+        const startX = alignGridPosition(characterX - gridRadius, spacing);
+        const endX = alignGridPosition(characterX + gridRadius, spacing);
+        const startY = alignGridPosition(characterY - gridRadius, spacing);
+        const endY = alignGridPosition(characterY + gridRadius, spacing);
+
+        // Loop through each point in the grid
+        for (let x = startX; x <= endX; x += spacing) {
+            for (let y = startY; y <= endY; y += spacing) {
+                const gridX = dw.toCanvasX(x);
+                const gridY = dw.toCanvasY(y);
+
+                ctx.beginPath();
+                ctx.rect(
+                    gridX, 
+                    gridY, 
+                    spacing * dw.constants.PX_PER_UNIT_ZOOMED, 
+                    spacing * dw.constants.PX_PER_UNIT_ZOOMED
+                );
+                
+                // If it's the smallest grid, check if the point is blocked
+                if (index === 0) {
+                    const centerX = x + spacing / 2; // Calculate the center point of the grid cell
+                    const centerY = y + spacing / 2;
+
+                    // Use the isPointBlocked function to check if this point is blocked
+                    if (isPointBlocked({ x: centerX, y: centerY })) {
+                        // Fill the rectangle with a semi-transparent red if the point is blocked
+                        ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+                        ctx.fillRect(
+                            gridX, 
+                            gridY, 
+                            spacing * dw.constants.PX_PER_UNIT_ZOOMED, 
+                            spacing * dw.constants.PX_PER_UNIT_ZOOMED
+                        );
+                    }
+                }
+
+                ctx.stroke(); // Draw the grid cell outline
+            }
+        }
+    });
+});
 
 
-    const monsterFinder = Finder.getMonstersByScore(e => dw.mdInfo[e.md]?.isMonster) || [];
 
-    // Get character's canvas coordinates
-    const characterX = dw.toCanvasX(dw.c.x);
-    const characterY = dw.toCanvasY(dw.c.y);
 
-    // Draw visited areas with bubbles representing visitation scores
+dw.on("drawOver", ctx => {
+    if(!DRAWING.hitbox) return false;
+
+    // Drawing hitboxes of entities
+    for (const e of dw.e) {
+        const hitbox = dw.getHitbox(e.md);
+        if (hitbox) {
+            const entityX = dw.toCanvasX(e.x);
+            const entityY = dw.toCanvasY(e.y);
+
+            const hitboxWidth = hitbox.w * dw.constants.PX_PER_UNIT_ZOOMED;
+            const hitboxHeight = hitbox.h * dw.constants.PX_PER_UNIT_ZOOMED;
+
+            const topLeftX = entityX - (hitboxWidth / 2);
+            const topLeftY = entityY - hitboxHeight;
+
+
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.rect(topLeftX, topLeftY, hitboxWidth, hitboxHeight);
+
+            if(dw.mdInfo[e.md]?.canCollide) {
+                ctx.strokeStyle = 'red';
+                ctx.fillStyle = '#ff000050';
+                ctx.fill();
+                ctx.stroke();
+            }
+            else {
+                ctx.strokeStyle = 'lightgreen';
+                ctx.fillStyle = '#00ff0050';
+                ctx.fill();
+                ctx.stroke();
+            }
+        }
+    }
+});
+
+
+
+dw.on("drawUnder", (ctx) => {
+     if(!DRAWING.visitedAreas) return false;
+
+    // Drawing visited areas as bubbles
     Movement.visitedPositions.forEach(pos => {
         const canvasX = dw.toCanvasX(pos.x);
         const canvasY = dw.toCanvasY(pos.y);
 
-        // Set bubble color based on the visitation score (higher score = darker color)
-        // Example: more visited areas get a darker green, less visited are lighter green.
         let alpha = Math.min(pos.score / 10, 1); // Cap alpha at 1 for highly visited areas
-        ctx.fillStyle = `rgba(0, 255, 0, ${alpha * 6})`; // Green color with varying transparency based on score
+        ctx.fillStyle = `rgba(0, 255, 0, ${alpha * 6})`; // Green color with varying transparency
 
         const radius = dw.constants.PX_PER_UNIT_ZOOMED * 0.5; // Bubble radius for each visited area
 
-        // Draw the bubble
         ctx.beginPath();
         ctx.arc(canvasX, canvasY, radius, 0, Math.PI * 2);
         ctx.fill();
     });
+});
 
-    // Draw the monsters and related information
-    for (let i = 0; i < monsterFinder.length; i++) {
+dw.on("drawUnder", (ctx) => {
+    if(!DRAWING.monsterVision) return false;
 
-        const { monster, score } = monsterFinder[i];
+    // Drawing monsters and their vision cones
+    const monsterFinder = Finder.getMonstersByScore(e => dw.mdInfo[e.md]?.isMonster) || [];
+
+    const characterX = dw.toCanvasX(dw.c.x);
+    const characterY = dw.toCanvasY(dw.c.y);
+
+    monsterFinder.forEach(({ monster, score }, index) => {
         const monsterX = dw.toCanvasX(monster.x);
         const monsterY = dw.toCanvasY(monster.y);
+        let circleColor = '#edff00'; // Default yellow
+        let radius = dw.constants.PX_PER_UNIT_ZOOMED * 0.5;
 
-        // Set default circle color and radius
-        let circleColor = '#edff00'; // Default yellow for regular monsters
-        let radius = dw.constants.PX_PER_UNIT_ZOOMED * 0.75;
-
-        // Set the color and stroke based on monster's score and position
-        if (i === 0 && score >= 0) {
-            circleColor = '#00ff00'; // Green for the highest score
-            ctx.strokeStyle = '#00ff0050';
+        if (index === 0 && score >= 0) {
+            circleColor = '#00ff00'; // Green for highest score
         } else if (score < 0) {
             circleColor = '#ff0000'; // Red for negative scores
-            ctx.strokeStyle = '#ff000050';
-        } else {
-            ctx.strokeStyle = '#edff0050'; // Yellow for others
         }
 
-        // Draw filled circle for each monster
+        ctx.strokeStyle = `${circleColor}80`; // Slight transparency for filled circle
         ctx.fillStyle = `${circleColor}80`; // Slight transparency for filled circle
         ctx.beginPath();
         ctx.arc(monsterX, monsterY - 15, radius, 0, Math.PI * 2);
         ctx.fill();
 
-        // Draw line from character to monster and show distance
-        const distanceToPlayer = dw.distance(dw.c.x, dw.c.y, monster.x, monster.y);
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(characterX, characterY);
-        ctx.lineTo(monsterX, monsterY);
-        ctx.stroke();
+        // // Drawing distance label and line between character and monster
+        // const distanceToPlayer = dw.distance(dw.c.x, dw.c.y, monster.x, monster.y);
+        // ctx.lineWidth = 1;
+        // ctx.beginPath();
+        // ctx.moveTo(characterX, characterY);
+        // ctx.lineTo(monsterX, monsterY);
+        // ctx.stroke();
 
-        // Show distance label between player and monster
-        const midX = (characterX + monsterX) / 2;
-        const midY = (characterY + monsterY) / 2;
-        ctx.font = '16px Arial';
-        ctx.fillStyle = 'magenta';
-        ctx.fillText(`${distanceToPlayer.toFixed(2)}`, midX, midY);
+        // const midX = (characterX + monsterX) / 2;
+        // const midY = (characterY + monsterY) / 2;
+        // ctx.font = '16px Arial';
+        // ctx.fillStyle = 'magenta';
+        // ctx.fillText(`${distanceToPlayer.toFixed(2)}`, midX, midY);
 
-        // Draw monster's attack radius using losConeRadius from SETTINGS
+        // Draw monster's attack radius
         const attackRadius = SETTINGS.visionConeRadius * dw.constants.PX_PER_UNIT_ZOOMED;
-
         if (monster.bad > 0 && monster.targetId !== dw.c.id) {
-
-            // Function to calculate future position of the monster
-            function getFuturePosition(monster, t) {
-                const futureX = monster.x + monster.dx * monster.moveSpeed * t;
-                const futureY = monster.y + monster.dy * monster.moveSpeed * t;
-                return { x: futureX, y: futureY };
-            }
-
-            // Draw vision cone for future positions of the monster
-            for (let t = 0; t <= SETTINGS.predictionTime; t += 1) {
-                const futurePos = getFuturePosition({
-                    x: monsterX,
-                    y: monsterY,
-                    dx: monster.dx * dw.constants.PX_PER_UNIT_ZOOMED,
-                    dy: monster.dy * dw.constants.PX_PER_UNIT_ZOOMED,
-                    moveSpeed: monster.moveSpeed * dw.constants.PX_PER_UNIT_ZOOMED,
-                }, t);
-                const futureX = futurePos.x;
-                const futureY = futurePos.y;
-
-                // Calculate monster's vision angle
-                const angle = Math.atan2(monster.dy, monster.dx);
-
-                // Draw monster's future vision cone
-                ctx.fillStyle = t === 0 ? `#edff0040` : `#edff0015`; // Transparent cone color
-                ctx.beginPath();
-                ctx.moveTo(futureX, futureY - 15);
-                ctx.arc(
-                    futureX,
-                    futureY - 15,
-                    attackRadius,
-                    angle - SETTINGS.visionConeAngle / 2,
-                    angle + SETTINGS.visionConeAngle / 2
-                );
-                ctx.closePath();
-                if (t === 0) ctx.stroke();
-                ctx.fill();
-            }
+            const futureX = dw.toCanvasX(monster.x);
+            const futureY = dw.toCanvasY(monster.y);
+            const angle = Math.atan2(monster.dy, monster.dx);
+            ctx.fillStyle = `#edff0040` // Transparent cone color
+            ctx.beginPath();
+            ctx.moveTo(futureX, futureY - 15);
+            ctx.arc(futureX, futureY - 15, attackRadius, angle - SETTINGS.visionConeAngle / 2, angle + SETTINGS.visionConeAngle / 2);
+            ctx.closePath();
+            ctx.stroke();
+            ctx.fill();
         }
+    });
+});
+
+dw.on("drawUnder", (ctx) => {
+    if(!DRAWING.path) return false;
+
+    // Function to draw an arrow between two points
+    function drawArrow(fromX, fromY, toX, toY) {
+        const headLength = 15; // Size of the arrowhead
+        const dx = toX - fromX;
+        const dy = toY - fromY;
+        const angle = Math.atan2(dy, dx); // Angle of the arrow
+
+        // Draw the arrow line (body)
+        ctx.beginPath();
+        ctx.moveTo(fromX, fromY);
+        ctx.lineTo(toX, toY);
+        ctx.stroke(); // Required to draw the line
+
+        // Draw the arrowhead
+        ctx.beginPath();
+        ctx.moveTo(toX, toY);
+        ctx.lineTo(
+            toX - headLength * Math.cos(angle - Math.PI / 6),
+            toY - headLength * Math.sin(angle - Math.PI / 6)
+        );
+        ctx.lineTo(
+            toX - headLength * Math.cos(angle + Math.PI / 6),
+            toY - headLength * Math.sin(angle + Math.PI / 6)
+        );
+        ctx.lineTo(toX, toY);
+        ctx.stroke(); // Required to draw the arrowhead
+    }
+
+    // Check if there's a best target and a valid path
+    if (bestTarget && bestTarget?.path?.length > 0) {
+        ctx.strokeStyle = "purple"; // Set the line color to purple
+        ctx.lineWidth = 3; // Set the line width based on path step size from SETTINGS
+
+        // Initialize the first point of the path
+        let prevX = dw.toCanvasX(bestTarget.path[0].x);
+        let prevY = dw.toCanvasY(bestTarget.path[0].y);
+
+        // Iterate through the rest of the path and draw arrows between each pair of points
+        for (let i = 1; i < bestTarget.path.length; i++) {
+            let currentX = dw.toCanvasX(bestTarget.path[i].x);
+            let currentY = dw.toCanvasY(bestTarget.path[i].y);
+            
+            // Draw an arrow from the previous point to the current point
+            drawArrow(prevX, prevY, currentX, currentY);
+
+            // Update the previous point to the current one
+            prevX = currentX;
+            prevY = currentY;
+        }
+
+        // Finalize the drawing of the path with arrows
+        ctx.stroke();
+    }
+});
+
+
+
+dw.on("drawUnder", (ctx) => {
+    if(!DRAWING.monsterScore) return false;
+
+    const monsterFinder = Finder.getMonstersByScore(e => dw.mdInfo[e.md]?.isMonster) || [];
+
+    // Iterate through the list of monsters
+    for (let i = 0; i < monsterFinder.length; i++) {
+        const { monster, score } = monsterFinder[i];
+        const monsterX = dw.toCanvasX(monster.x);
+        const monsterY = dw.toCanvasY(monster.y);
 
         // Draw score label next to the monster
         ctx.font = '30px Arial';
-        ctx.fillStyle = score >= 0 ? 'green' : 'white';
+        ctx.fillStyle = score >= 0 ? 'green' : 'white'; // Green for positive score, white for negative
         ctx.fillText(`${Math.round(score)}`, monsterX, monsterY + 30);
-        
-        // Array of rainbow colors (ROYGBIV: Red, Orange, Yellow, Green, Blue, Indigo, Violet)
-        const rainbowColors = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet'];
 
-        // Check for rare monster and draw concentric circles
+        // If the monster is rare, draw rainbow-colored circles around it
         if (monster.r > 0) {
-            const numCircles = monster.r;
-            const circleSpacing = 12;
+            const numCircles = monster.r; // Number of circles for rare monsters
+            const circleSpacing = 12; // Spacing between circles
+            const rainbowColors = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet']; // Rainbow colors
             for (let j = 0; j < numCircles; j++) {
-                // Cycle through rainbow colors
-                const colorIndex = j % rainbowColors.length;
+                const colorIndex = j % rainbowColors.length; // Cycle through rainbow colors
                 ctx.strokeStyle = rainbowColors[colorIndex];
                 ctx.lineWidth = 2;
                 ctx.beginPath();
                 ctx.arc(
                     monsterX,
                     monsterY - 15,
-                    (radius) + ((j + 1) * circleSpacing),
+                    dw.constants.PX_PER_UNIT_ZOOMED * 0.75 + ((j + 1) * circleSpacing), // Increase radius for each circle
                     0,
                     Math.PI * 2
                 );
-                ctx.stroke();
+                ctx.stroke(); // Draw the circle
             }
         }
+    }
+});
 
+dw.on('drawUnder', (ctx) => {
+  ctx.lineWidth = 2
+  ctx.strokeStyle = 'red'
+
+  for (const plot of dw.account.plots) {
+    if (dw.distance(dw.character.x, dw.character.y, plot.x, plot.y) > 32) {
+      continue
     }
 
-    // Draw lines between monsters that are less than 2 units apart and show their distances
-    for (let i = 0; i < monsterFinder.length; i++) {
-        const monster1 = monsterFinder[i].monster;
-        const monsterX1 = dw.toCanvasX(monster1.x);
-        const monsterY1 = dw.toCanvasY(monster1.y);
+    ctx.beginPath()
+    ctx.rect(
+      dw.toCanvasX(plot.x),
+      dw.toCanvasY(plot.y),
+      plot.w * dw.constants.PX_PER_UNIT_ZOOMED,
+      plot.h * dw.constants.PX_PER_UNIT_ZOOMED,
+    )
+    ctx.stroke()
+  }
+})
 
+dw.on("drawOver", ctx => {
+    if(!DRAWING.treeSpot) return false;
 
-    
-
-        for (let j = i + 1; j < monsterFinder.length; j++) {
-            const monster2 = monsterFinder[j].monster;
-            const monsterX2 = dw.toCanvasX(monster2.x);
-            const monsterY2 = dw.toCanvasY(monster2.y);
-
-            // Calculate distance between two monsters
-            const distanceBetweenMonsters = dw.distance(monster1.x, monster1.y, monster2.x, monster2.y);
-
-            if (distanceBetweenMonsters <= SETTINGS.gooProximityRange) { // Use SETTINGS for proximity range
-                // Draw line between monsters
-                ctx.strokeStyle = 'purple';
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.moveTo(monsterX1, monsterY1);
-                ctx.lineTo(monsterX2, monsterY2);
-                ctx.stroke();
-
-                // Draw distance label between monsters
-                const midX = (monsterX1 + monsterX2) / 2;
-                const midY = (monsterY1 + monsterY2) / 2;
-                ctx.font = '16px Arial';
-                ctx.fillStyle = 'purple';
-                ctx.fillText(`${distanceBetweenMonsters.toFixed(2)}`, midX, midY);
-            }
-        }
-
-         // Calcula a posição atrás do monstro
-        const safePosition = Util.calculateSafePosition(monster1, SETTINGS.globalSafePositioning, true); // Posição atrás
-
-        // Calcula a posição na frente do monstro
-        const frontPosition = Util.calculateSafePosition(monster1, SETTINGS.globalSafePositioning, false); // Posição à frente
-
-        // Desenha um ponto na posição do monstro (opcional)
+    // Drawing tree planting points
+    const allPoints = Misc.getAllTreePlantingPoints();
+    ctx.fillStyle = 'red';
+    for (const point of allPoints) {
+        const treeX = dw.toCanvasX(point.x);
+        const treeY = dw.toCanvasY(point.y);
         ctx.beginPath();
-        ctx.strokeStyle = 'blue';
-        ctx.lineWidth = 6
-
-            // Desenha uma seta atrás do monstro (posição segura)
-        drawArrow(dw.toCanvasX(safePosition.x), dw.toCanvasY(safePosition.y), monsterX1, monsterY1);
-
-        // Desenha uma seta na frente do monstro (na direção do movimento)
-        drawArrow(monsterX1, monsterY1, dw.toCanvasX(frontPosition.x), dw.toCanvasY(frontPosition.y));
+        ctx.arc(treeX, treeY, 5, 0, Math.PI * 2);
+        ctx.fill();
     }
-
-     if (bestTarget && bestTarget?.path?.length > 0) {
-        ctx.strokeStyle = "purple"; // Define line color
-        ctx.lineWidth = 5; // Line width based on path step size from SETTINGS
-
-        // Função auxiliar para desenhar uma seta entre dois pontos
-        ctx.beginPath();
-
-        // Convert the first position of the path and start drawing
-        let prevX = dw.toCanvasX(bestTarget.path[0].x);
-        let prevY = dw.toCanvasY(bestTarget.path[0].y);
-
-        // Draw arrows between all points on the path
-        for (let i = 1; i < bestTarget.path.length; i++) {
-            let currentX = dw.toCanvasX(bestTarget.path[i].x);
-            let currentY = dw.toCanvasY(bestTarget.path[i].y);
-            
-            drawArrow(prevX, prevY, currentX, currentY); // Desenha a seta
-
-            // Atualiza a posição anterior
-            prevX = currentX;
-            prevY = currentY;
-        }
-
-        // Finish drawing the path with arrows
-        ctx.stroke();
-    }
-
 });
