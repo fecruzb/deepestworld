@@ -1,6 +1,6 @@
 const IS_ACTIVE = true;
 const DRAWING = {
-    grid: true,
+    grid: false,
     hitbox: true,
     treeSpot: true,
     visitedAreas: true,
@@ -13,7 +13,10 @@ dw.debug = true;
 let lastPosition = { x: dw.character.x, y: dw.character.y };
 let lastMoveTime = Date.now();
 let bestTarget = null
-const visitedPositions = [];
+const visitedPositions = []
+
+let lastPath = null; // Stores the last computed path
+let lastComputationTime = 0; // Stores the timestamp of the last path computation;
 /**
  * Configuration constants used throughout the code.
  * @constant
@@ -31,36 +34,37 @@ const SETTINGS = {
     gameLoopInterval: 400,
     globalProximityToAction: 0.5,
     globalSafePositioning: 0.2,
-    pathProximity: 0.5,
-    visionConeAngle: Math.PI * 1.1, 
-    visionConeRadius: 3.4, 
-    pathStepSize: 0.5,
-    maxPathfindingIterations: 250,
+    pathProximity: 0.7,
+    visionConeAngle: Math.PI, 
+    visionConeRadius: 3.2, 
+    pathStepSize: 0.75,
+    maxPathfindingIterations: 500,
     interpolationSteps: 20,
     gooProximityRange: 1,
     monsterProximityRange: 1,
-    zoneLevelSuicide: 0,
-    idleTime: 5000,
+    zoneLevelSuicide: 53,
+    idleTime: 30,
+    needRecoveryHpTreshold: 0.8,
 };
 
 /**
  * Configuration flags for various behaviors
  */
 const CONFIG = {
-    plantTree: true,
-    getResources: true,
+    plantTree: false,
+    getResources: false,
     optimizePath: true,
     exploreNewAreas: true,
-    removeItems: true,
-    combineItems: true,
-    recycleItems: true,
+    removeItems: false,
+    combineItems: false,
+    recycleItems: false,
     sortItems: true,
-    suicideAtZoneLevel: true,
-    suicideUnderground: true,
+    suicideAtZoneLevel: false,
+    suicideUnderground: false,
     attackNextScoreMonster: true,
     moveToMission: false,
     moveToShrub: false,
-    enableRecoveryDistance: false,
+    enableRecoveryDistance: true,
     followAllied: false,
 };
 
@@ -71,10 +75,10 @@ const SKILLS = {
         range: 0.7,
     },
     exertion: {
-        enable: false,
+        enable: true,
         index: 1,
         range: 0.7,
-        hpThreshold: 30000,
+        hpThreshold: 24000,
     },
     conservation: {
         enable: false,
@@ -94,7 +98,7 @@ const SKILLS = {
         range: 0.5,
         hpThreshold: 1,
         hpThresholdMin: 0.4,
-        withExertion: false,
+        withExertion: true,
         withMasochism: false,
         withGraft: true
     },
@@ -106,7 +110,7 @@ const SKILLS = {
         withMasochism: false
     },
     buff: {
-        enable: false,
+        enable: true,
         index: 6,
         range: 0.75,
     },
@@ -119,8 +123,8 @@ const SKILLS = {
     teleport: {
         enable: true,
         index: 5,
-        range: 3.8,
-        minRange: 2,
+        range: 4.1,
+        minRange: 0,
         minSavedRange: 0
     },
     graft: {
@@ -147,43 +151,44 @@ const SKILLS = {
 
 const ITEMS = {
     global: {
-        min_any_mod_quantity: 4,
+        min_any_mod_quantity: 6,
         min_any_mod_quality: 12,
         mods_to_keep: [],
         tags_to_keep: [],
-        mds_to_keep: ["physwooddagger2", "physwooddagger3"]
+        mds_to_keep: []
     },
     weapon: {
         mods: [
             "physDmgIncLocal", 
             "physDmgLocal",
+            "critLocal"
         ],
         conditions: {
             operator: "AND", 
             conditions: [
                 { 
                     condition: "min_quantity", 
-                    value: 2 
+                    value: 2
                 },
                 { 
                     condition: "min_quality", 
-                    value: 5,
+                    value: 6,
                 },
                 { 
                     condition: "min_sum_quality",
                     value: 8
-                }
+                },
             ]
         }
     },
     accessory: {
-        mods: ["dmg", "physDmg", "hp"],
+        mods: ["dmg", "physDmg"],
         conditions: {
             operator: "AND",
             conditions: [
                 { 
                     condition: "min_quantity", 
-                    value: 3
+                    value: 2
                 },
                 { 
                     condition: "min_quality", 
@@ -197,13 +202,33 @@ const ITEMS = {
         }
     },
     belt: {
-        mods: ["dmg", "physDmg", "hp"],
+        mods: ["dmg", "physDmg"],
         conditions: {
             operator: "AND",
             conditions: [
                 { 
                     condition: "min_quantity", 
-                    value: 3
+                    value: 2
+                },
+                { 
+                    condition: "min_quality", 
+                    value: 5
+                },
+                { 
+                    condition: "min_sum_quality", 
+                    value: 8
+                },
+            ]
+        }
+    },
+    glove: {
+        mods: ["hp", "physDmg"],
+        conditions: {
+            operator: "AND",
+            conditions: [
+                { 
+                    condition: "min_quantity", 
+                    value: 2
                 },
                 { 
                     condition: "min_quality", 
@@ -217,7 +242,7 @@ const ITEMS = {
         }
     },
     armor: {
-        mods: ["hp", "hpRegen"],
+        mods: ["hp", "mp"],
         conditions: {
             operator: "AND",
             conditions: [
@@ -297,7 +322,7 @@ const SCORE = {
          * If the rarity or HP exceeds the thresholds, the monster is harder to defeat,
          * and should be deprioritized. Higher rarity increases the score unless too difficult.
          */
-        rareMonsterMultiplier: 30,
+        rareMonsterMultiplier: 15,
 
         /**
          * Rarity level threshold. Monsters with rarity above this level are avoided,
@@ -309,12 +334,12 @@ const SCORE = {
          * HP threshold. Monsters with max HP above this level are avoided,
          * as they are considered too tough to handle, even if their rarity is low.
          */
-        rareMonsterHpThreshold: 50000,
+        rareMonsterHpThreshold: +Infinity,
 
          /**
          * Global HP threshold
          */
-        hpThreshold: 50000,
+        hpThreshold: +Infinity,
         hpThresholScore: -100,
     },
 
@@ -566,8 +591,8 @@ const Util = {
      * @returns {boolean} True if the point or hitbox is blocked, false otherwise.
      */
     isPointBlocked(point, characterHitbox = null) {
-        const terrainSurface = dw.getTerrainAt(point.x, point.y, 0);
-        const terrainUnderground = dw.getTerrainAt(point.x, point.y, -1);
+        const terrainSurface = dw.getTerrainAt(point.x, point.y, dw.c.z);
+        const terrainUnderground = dw.getTerrainAt(point.x, point.y, dw.c.z -1);
 
         // Check if terrain is blocking
         if (terrainSurface !== 0 || terrainUnderground < 1) {
@@ -589,8 +614,8 @@ const Util = {
 
             for (let x = hitboxLeft; x < hitboxRight; x++) {
                 for (let y = hitboxTop; y < hitboxBottom; y++) {
-                    const surface = dw.getTerrainAt(x, y, 0);
-                    const underground = dw.getTerrainAt(x, y, -1);
+                    const surface = dw.getTerrainAt(x, y, dw.character.z);
+                    const underground = dw.getTerrainAt(x, y, dw.character.z - 1);
                     
                     if (surface !== 0 || underground < 1) {
                         return true;
@@ -1070,8 +1095,9 @@ const Character = {
      * @returns {boolean} True if the character has the conservation effect, otherwise false.
      */
     hasBuff() {
-        return 'buff' in dw.character.fx;
+        return 'buff' in dw.character.fx || 'surge' in dw.character.fx;
     },
+
 
     /**
      * Checks if the character has the 'masochism' effect active.
@@ -1133,7 +1159,7 @@ const Finder = {
                 (
                     dw.mdInfo[entity.md]?.isMonster || 
                     (CONFIG.getResources && dw.mdInfo[entity.md]?.isResource) ||
-                    (dw.mdInfo[entity.md]?.type === "recycler" && entity.owner)
+                    (entity.md === "recycler" && CONFIG.recycleItems)
                 ) && 
                 entity.z === dw.character.z &&
                 (!entity.isSafe || entity.owner === 1) &&
@@ -1172,7 +1198,7 @@ const Finder = {
             
             if(CONFIG.recycleItems && dw.mdInfo[monster.md]?.isStation) {
                 const inventory = Misc.mapInventory()
-                if((inventory?.recycle?.length > 0 || monster?.output.filter(e => e !== null)?.length >= 1) || monster.powerOn === 1)
+                if((inventory?.recycle?.length >= 1 || dw.c.recycler?.output.filter(e => e !== null)?.length >= 1))
                     score += 50
                 else 
                     score -= 1000
@@ -1195,7 +1221,7 @@ const Finder = {
                 if ([dw.character.id].includes(monster.targetId)) {
                     score += SCORE.monster.targetCharacterBonus; // Apply bonus if the monster is targeting the character
                 }
-                score += (60 * Math.exp(-0.8 * Util.distanceToTarget(monster)));
+                score += (60 * Math.exp(-0.6 * Util.distanceToTarget(monster)));
 
 
                 if (monster.maxHp >= SCORE.monster.hpThreshold) {
@@ -1258,7 +1284,7 @@ const Finder = {
 
             if(m.score < 0) return false
 
-            if(m.monster.owner && m.monster.md.includes("recycler")) {
+            if(m.monster.md.includes("recycler")) {
                 if(m.score < 0) return false
                 // const inventory = Misc.mapInventory()
                 // if(
@@ -1322,6 +1348,7 @@ const Action = {
                 if (dw.canUseSkill(SKILLS.shield.index, dw.character.id)) {
                     DEBUG.log(`Using <span style="color: hotpink">Lifeshield</span>`);
                     dw.useSkill(SKILLS.shield.index, dw.c.id);
+                    return true
                 }
             }
         }
@@ -1344,6 +1371,7 @@ const Action = {
             if (dw.canUseSkill(SKILLS.heal.index, dw.character.id)) {
                 DEBUG.log(`Using <span style="color: hotpink">Heal</span>. Life below <span style="color: pink">${SKILLS.heal.hpThreshold * 100}%</span>`);
                 dw.useSkill(SKILLS.heal.index, dw.character.id);
+                return true
             }
         }
     },
@@ -1414,6 +1442,14 @@ const Action = {
     followAndAttack(target, needRecovery = false) {
         dw.setTarget(target.id);
         const distToTarget = Util.distanceToTarget(target);
+
+
+        // Use heal and shield before battle
+        if(distToTarget < 1.5) {
+            Action.useShieldSkill()
+            Action.useHealSkill()
+        }
+
         const range = SKILLS.arrow.enable ? SKILLS.arrow.range : SKILLS.attack.range
 
         if(!Character.isCasting()) {
@@ -1552,21 +1588,21 @@ const Movement = {
 
         
         if (target?.path) {
-            // DEBUG.log(`<span style="color: lime">Pathfinding</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
+            DEBUG.log(`<span style="color: lime">Pathfinding</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
             x = target.path[1].x
             y = target.path[1].y
             if(dw.mdInfo[target.md].isMonster) {
                 Movement.getCloserPath(target.path);
             }
         } else {
-            // DEBUG.log(`<span style="color: lime">Moving</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
+            DEBUG.log(`<span style="color: lime">Moving</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
             if(dw.mdInfo[target.md].isMonster) {
                 Movement.getCloserMove(target);
             }
         }
 
         if(safeDistance !== 0) {
-            // DEBUG.log(`<span style="color: lime">Safe Positioning</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
+            DEBUG.log(`<span style="color: lime">Safe Positioning</span> to <span style="color: cyan">${dw.mdInfo[target.md]?.name}</span>`);
             const safePoint = Util.calculateSafePosition({ ...target, x, y}, safeDistance)
             x = safePoint.x
             y = safePoint.y
@@ -1704,136 +1740,156 @@ const Movement = {
 
     visitedPositions: [],
 
-    /**
-     * Adds or updates a position in the visited set with a score.
-     * If the position is new, it will be added with an initial score of 1.
-     * If the position exists, its score will be incremented.
-     * @param {number} x - X-coordinate.
-     * @param {number} y - Y-coordinate.
+
+    decayRate: 0.01, // Define a taxa de decadência da pontuação a cada ciclo
+    decayInterval: 3000, // Intervalo em milissegundos para a decadência (por exemplo, 1 minuto)
+
+
+    initializeDecay() {
+        setInterval(() => {
+            console.log(1)
+            Movement.applyScoreDecay();
+        }, Movement.decayInterval);
+    },
+
+        /**
+     * Aplica a decadência de pontuação às posições visitadas.
+     * Reduz gradualmente a pontuação das áreas visitadas ao longo do tempo.
+     */
+    applyScoreDecay() {
+        const currentTime = Date.now();
+
+        Movement.visitedPositions = Movement.visitedPositions.map(pos => {
+            // Calcular o tempo desde a última visita
+            const timeSinceLastVisit = (currentTime - pos.lastVisited) / 1000; // Em segundos
+
+            // Reduzir a pontuação com base na taxa de decadência e no tempo decorrido
+            const newScore = Math.max(0, pos.score - Movement.decayRate * timeSinceLastVisit);
+
+            return { ...pos, score: newScore };
+        });
+
+        // Remover posições com pontuação 0
+        Movement.visitedPositions = Movement.visitedPositions.filter(pos => pos.score > 0);
+    },
+
+        /**
+     * Adiciona ou atualiza uma posição no conjunto de posições visitadas com uma pontuação.
+     * Se a posição for nova, será adicionada com pontuação inicial de 1.
+     * Se a posição já existir, sua pontuação será incrementada.
+     * @param {number} x - Coordenada X.
+     * @param {number} y - Coordenada Y.
      */
     markPositionAsVisited(x, y) {
         const existingPos = Movement.visitedPositions.find(pos => Math.hypot(pos.x - x, pos.y - y) <= 0.5);
         if (existingPos) {
-            existingPos.score++; // Increment the score if the position is revisited
+            existingPos.score++; // Incrementa a pontuação se a posição já foi visitada
+            existingPos.lastVisited = Date.now(); // Atualiza o tempo da última visita
         } else {
-            Movement.visitedPositions.push({ x, y, score: 1 }); // Add a new position with score 1
+            Movement.visitedPositions.push({ x, y, score: 1, lastVisited: Date.now() }); // Adiciona uma nova posição com pontuação 1 e o tempo atual
         }
     },
 
     /**
-     * Checks if a position has been visited and retrieves the visitation score.
-     * If the position exists, return its score; otherwise, return 0 for unvisited.
-     * @param {number} x - X-coordinate.
-     * @param {number} y - Y-coordinate.
-     * @returns {number} The visitation score (0 if unvisited).
+     * Retorna a pontuação de visitação de uma posição.
+     * Se a posição existir, retorna sua pontuação; caso contrário, retorna 0 para não visitada.
+     * @param {number} x - Coordenada X.
+     * @param {number} y - Coordenada Y.
+     * @returns {number} A pontuação de visitação (0 se não visitada).
      */
     getPositionVisitScore(x, y) {
         const pos = Movement.visitedPositions.find(pos => Math.hypot(pos.x - x, pos.y - y) <= 0.5);
-        return pos ? pos.score : 0; // Return score if visited, otherwise 0
+        return pos ? pos.score : 0; // Retorna a pontuação se visitada, caso contrário, 0
     },
 
     /**
-     * Removes points from visitedPositions that are more than 30 units away from the current position.
+     * Remove pontos de visitedPositions que estão a mais de 30 unidades de distância da posição atual.
      */
     cleanupDistantVisitedPoints() {
         const currentPos = { x: dw.character.x, y: dw.character.y };
         Movement.visitedPositions = Movement.visitedPositions.filter(pos => {
             const distance = Math.hypot(pos.x - currentPos.x, pos.y - currentPos.y);
-            return distance <= 30; // Keep points that are within 30 units
+            return distance <= 30; // Mantém pontos dentro de 30 unidades
         });
     },
 
     /**
-     * Explore new areas by moving to positions with the lowest visitation score within a 5-unit radius.
-     * Avoids recently visited areas and ensures proper movement away from high-visited areas.
-     * @returns {Object|null} The next direction to move, or null if no valid movement is found.
+     * Explora novas áreas movendo-se para posições com a menor pontuação de visitação em um raio de 5 unidades.
+     * Evita áreas recentemente visitadas e garante movimento para longe de áreas altamente visitadas.
+     * @returns {Object|null} A próxima direção para se mover, ou null se nenhum movimento válido for encontrado.
      */
     exploreNewAreas() {
         if(!CONFIG.exploreNewAreas) {
-            return
+            return;
         }
-        
+
+        const currentTime = Date.now();
+        const timeSinceLastComputation = currentTime - lastComputationTime;
+
         const currentPos = { x: dw.character.x, y: dw.character.y };
 
-        // Cleanup distant points before exploring new areas
+        // Limpa pontos distantes antes de explorar novas áreas
         Movement.cleanupDistantVisitedPoints();
 
-        // Mark current position as visited
+        // Marca a posição atual como visitada
         Movement.markPositionAsVisited(currentPos.x, currentPos.y);
 
-        const maxDistance = 5; // Maximum distance to move (increase to avoid small steps)
+        // If the path was computed within the last second, return the last path
+        if (timeSinceLastComputation < 1000 && lastPath) {
+            return lastPath;
+        }
+
+       
+
+        const maxDistance = 5; // Distância máxima para mover (aumente para evitar pequenos passos)
         const directions = [
-            { x: maxDistance, y: 0 }, { x: -maxDistance, y: 0 }, // Left and Right
-            { x: 0, y: maxDistance }, { x: 0, y: -maxDistance }, // Up and Down
-            { x: maxDistance, y: maxDistance }, { x: -maxDistance, y: maxDistance }, // Diagonals
-            { x: maxDistance, y: -maxDistance }, { x: -maxDistance, y: -maxDistance } // Diagonals
+            { x: maxDistance, y: 0 }, { x: -maxDistance, y: 0 }, // Esquerda e direita
+            { x: 0, y: maxDistance }, { x: 0, y: -maxDistance }, // Cima e baixo
+            { x: maxDistance, y: maxDistance }, { x: -maxDistance, y: maxDistance }, // Diagonais
+            { x: maxDistance, y: -maxDistance }, { x: -maxDistance, y: -maxDistance } // Diagonais
         ];
 
-        // Sort directions based on visitation score and distance from dense clusters
+        // Ordena direções com base na pontuação de visitação e distância de aglomerados densos
         directions.sort((a, b) => {
             const scoreA = Movement.getPositionVisitScore(currentPos.x + a.x, currentPos.y + a.y);
             const scoreB = Movement.getPositionVisitScore(currentPos.x + b.x, currentPos.y + b.y);
             const distA = Math.hypot(currentPos.x + a.x, currentPos.y + a.y);
             const distB = Math.hypot(currentPos.x + b.x, currentPos.y + b.y);
 
-            // Prioritize areas with lower scores (less visited) and further distances
+            // Prioriza áreas com pontuações mais baixas (menos visitadas) e distâncias maiores
             if (scoreA !== scoreB) {
-                return scoreA - scoreB; // Prioritize areas with fewer visits
+                return scoreA - scoreB; // Prioriza áreas com menos visitas
             }
-            return distB - distA; // Prioritize areas further from the current position
+            return distB - distA; // Prioriza áreas mais distantes da posição atual
         });
 
-        // Try each direction, moving to less visited positions
+        // Tenta cada direção, movendo-se para posições menos visitadas
         for (const dir of directions) {
             const newPos = { x: currentPos.x + dir.x, y: currentPos.y + dir.y };
 
-            // Ensure the new position is safe and avoid high-visitation bubbles
+            // Garante que a nova posição é segura e evita bolhas de alta visitação
             if (Util.isSafe(newPos) && !Util.isPathBlocked(newPos)) {
-                DEBUG.log(`Exploring new area at [${newPos.x}, ${newPos.y}]`);
+                DEBUG.log(`Explorando nova área em [${newPos.x}, ${newPos.y}]`);
                 const path = Movement.findPath(newPos);
 
                 if (path?.path?.length > 1) {
+
+                      // Atualiza o último caminho e o tempo de cálculo
+                lastPath = path;
+                lastComputationTime = currentTime;
+
                     dw.move(path.path[1].x, path.path[1].y);
                 }
                 return path;
             }
         }
 
-        // If no valid movement is found, fallback to wall-following
-        DEBUG.log("No valid paths found. Attempting to follow wall.");
+        // Se nenhum movimento válido for encontrado, recorre à lógica de seguir a parede
+        DEBUG.log("Nenhum caminho válido encontrado. Tentando seguir parede.");
         Movement.followWall(currentPos);
 
-        return null; // No valid movement found
+        return null; // Nenhum movimento válido encontrado
     },
-
-    /**
-     * Wall-following logic to handle cases where the character is stuck or blocked.
-     * Attempts to "hug" the wall by moving along its edge until a valid path is found.
-     * @param {Object} currentPos - The character's current position.
-     */
-    followWall(currentPos) {
-        const wallDirections = [
-            { x: 1, y: 0 }, { x: -1, y: 0 }, // Left and Right
-            { x: 0, y: 1 }, { x: 0, y: -1 }, // Up and Down
-            { x: 1, y: 1 }, { x: -1, y: 1 }, // Diagonals
-            { x: 1, y: -1 }, { x: -1, y: -1 } // Diagonals
-        ];
-
-        // Try each wall-following direction
-        for (const dir of wallDirections) {
-            const newPos = { x: currentPos.x + dir.x, y: currentPos.y + dir.y };
-
-            // Move along the wall edge if possible
-            if (Util.isSafe(newPos) && !Util.isPathBlocked(newPos)) {
-                DEBUG.log(`Following wall at [${newPos.x}, ${newPos.y}]`);
-                dw.move(newPos.x, newPos.y);
-                return;
-            }
-        }
-
-        // If all wall-following attempts fail, stay in place
-        DEBUG.log("All wall-following attempts failed. Staying in place.");
-    }
 };
 
 const Misc = {
@@ -1882,7 +1938,12 @@ const Misc = {
     // Check if item is armor
     isArmor(item) {
         const metaData = dw.mdInfo[item.md];
-        return (metaData?.isArmor && !item?.md?.includes("belt")) || false;
+        return (metaData?.isArmor && !item?.md?.includes("belt") && !item?.md?.includes("gloves")) || false;
+    },
+
+    isGlove(item) {
+        const metaData = dw.mdInfo[item.md];
+        return (metaData?.isArmor && item?.md?.includes("gloves")) || false;
     },
 
      // Check if item is armor
@@ -1916,6 +1977,11 @@ const Misc = {
         min_quantity: (item, condition, mods) => {
             const modCount = Misc.countModsFromList(item, mods);
             return modCount >= condition.value;
+        },
+
+        // Check if the item has at least a certain number of mods from the mod list
+        md_list: (item, condition) => {
+            return condition.value.includes(item.md)
         },
 
         // Check if the item has at least one mod from the list with a value greater than or equal to the threshold
@@ -1965,10 +2031,17 @@ const Misc = {
 
     
     getRecycler() {
-         return dw.findEntities((e) =>
-            e.owner && 
+         const entity = dw.findEntities((e) =>
             e.md.includes("recycler") && 
-            dw.distance(e, dw.c) < 2).shift()
+            dw.distance(e, dw.c) < 4).shift()
+
+        if(entity) {
+            return { ...entity, ...dw.c.recycler}
+        }
+
+        return false
+
+
     },
 
     getRecyclerSpotToMove() {
@@ -1976,7 +2049,7 @@ const Misc = {
         if(!recycler) return false
         return {
             id: recycler.id,
-            index: recycler.storage.findIndex(e => e === null)
+            index: recycler.input.findIndex(e => e === null)
         }
     },
 
@@ -2000,7 +2073,7 @@ const Misc = {
         if(spot) {
             if(spot.index != -1) {
                 dw.log(`Recycling item ${index}`)
-                dw.moveItem("bag", index, "storage", spot.index, null, spot.id)
+                dw.moveItem(dw.c.bag, index, dw.c.recycler.input, spot.index)
             }
             else {
                 dw.log("Storage is full.")
@@ -2023,15 +2096,15 @@ const Misc = {
             }
 
             dw.log(`Collecting item ${spotRecycler.index} to ${spotBag.index}`)
-            dw.moveItem("output", spotRecycler.index, "bag", spotBag.index, spotRecycler.id)
+            dw.moveItem(dw.c.recycler.output, spotRecycler.index, dw.c.bag, spotBag.index)
        }
     },
 
     recyclerTurnOn() {
         const recycler = Misc.getRecycler()
-        if(recycler && recycler?.powerOn === 0 && recycler.storage.find(e => e !== null)) {
+        if(recycler && recycler.input.find(e => e !== null)) {
             dw.log("Turning on")
-            dw.toggleStation(recycler.id)
+            dw.recycle()
         }
     },
 
@@ -2194,6 +2267,16 @@ const Misc = {
                 itemsToRecycle.push(index); // Mark for removal if conditions fail
             }
 
+            // Evaluate conditions for belts
+            else if (Misc.isGlove(item)) {
+                const { conditions } = ITEMS.belt;
+                const result = Misc.evaluateConditions(item, conditions, ITEMS.glove.mods);
+                logEvaluation(item, result, 'Gloves conditions evaluated');
+                if (result) return;
+                logExclusion(item, mods, 'Gloves conditions failed');
+                itemsToRecycle.push(index); // Mark for removal if conditions fail
+            }
+
             // Evaluate conditions for armor
             else if (Misc.isArmor(item)) {
                 const { conditions } = ITEMS.armor;
@@ -2252,7 +2335,7 @@ const Misc = {
     let inventory = Misc.mapInventory();
 
      if (CONFIG.removeItems && inventory.remove.length > 0) {
-        inventory.remove.forEach(inventoryIndex => dw.deleteItem(inventoryIndex));
+        inventory.remove.forEach(inventoryIndex => dw.deleteItem(dw.c.bag, inventoryIndex));
         return;
     }
 
@@ -2396,9 +2479,6 @@ const eventPriority = [
     Movement.checkZoneLevel,
     Misc.cleanInventory,
     Action.useBuff,
-    Action.useShieldSkill,
-    Action.useHealSkill,
-    Action.useHealAlternativeSkill,
     Movement.tauntAttacking,
     Movement.followAllied,
     Finder.getNextMonster,
@@ -2419,7 +2499,7 @@ function handleGameEvents() {
         const needRecovery = CONFIG.enableRecoveryDistance && 
                                         target.toAttack && 
                                         attackers.length === 0 && 
-                                        (Character.isHpBelowPercentage(0.5))   
+                                        (Character.isHpBelowPercentage(SETTINGS.needRecoveryHpTreshold))   
 
 
 
@@ -2453,11 +2533,12 @@ function gameLoop() {
         }
         setTimeout(gameLoop, SETTINGS.gameLoopInterval); // Re-run the loop every 250ms
     } catch (error) {
-        dw.log(error)
+        throw error
     }
 }
 
 gameLoop();
+Movement.initializeDecay();
 
 
 dw.on("drawOver", ctx => {
@@ -2479,8 +2560,8 @@ dw.on("drawOver", ctx => {
 
     // Function to check if a point is blocked
     function isPointBlocked(point) {
-        const terrainSurface = dw.getTerrainAt(point.x, point.y, 0);
-        const terrainUnderground = dw.getTerrainAt(point.x, point.y, -1);
+        const terrainSurface = dw.getTerrainAt(point.x, point.y, dw.c.z);
+        const terrainUnderground = dw.getTerrainAt(point.x, point.y, dw.c.z - 1);
 
         // Check if terrain is blocking or if any items block the path
         return terrainSurface !== 0 || terrainUnderground < 1;
@@ -2577,24 +2658,64 @@ dw.on("drawOver", ctx => {
 
 
 
-dw.on("drawUnder", (ctx) => {
-     if(!DRAWING.visitedAreas) return false;
 
-    // Drawing visited areas as bubbles
+dw.on("drawUnder", (ctx) => {
+    if (!DRAWING.visitedAreas) return false;
+
+    // Desenhar áreas visitadas como bolhas
     Movement.visitedPositions.forEach(pos => {
         const canvasX = dw.toCanvasX(pos.x);
         const canvasY = dw.toCanvasY(pos.y);
 
-        let alpha = Math.min(pos.score / 10, 1); // Cap alpha at 1 for highly visited areas
-        ctx.fillStyle = `rgba(0, 255, 0, ${alpha * 6})`; // Green color with varying transparency
+        let alpha = Math.min(pos.score / 10, 1); // Limitar o alpha em 1 para áreas altamente visitadas
+        ctx.fillStyle = `rgba(0, 255, 0, ${alpha * 6})`; // Cor verde com transparência variável
 
-        const radius = dw.constants.PX_PER_UNIT_ZOOMED * 0.5; // Bubble radius for each visited area
+        const radius = dw.constants.PX_PER_UNIT_ZOOMED * 0.5; // Raio da bolha para cada área visitada
 
         ctx.beginPath();
         ctx.arc(canvasX, canvasY, radius, 0, Math.PI * 2);
         ctx.fill();
     });
+
+    // Desenhar seta do personagem até o ponto final de lastPath
+    if (lastPath && lastPath.path && lastPath.path.length > 1) {
+        console.log("draw")
+        const startX = dw.toCanvasX(dw.character.x); // Posição atual do personagem no canvas
+        const startY = dw.toCanvasY(dw.character.y);
+
+        const endX = dw.toCanvasX(lastPath.path[lastPath.path.length - 1].x); // Ponto final do caminho
+        const endY = dw.toCanvasY(lastPath.path[lastPath.path.length - 1].y);
+
+        // Desenhar uma linha do personagem até o ponto final
+        ctx.strokeStyle = "rgba(255, 0, 0, 0.8)"; // Cor da seta (vermelha com transparência)
+        ctx.lineWidth = 3; // Largura da linha
+
+        ctx.beginPath();
+        ctx.moveTo(startX, startY); // Posição inicial (personagem)
+        ctx.lineTo(endX, endY); // Posição final (ponto final do caminho)
+        ctx.stroke();
+
+        // Desenhar a ponta da seta no ponto final
+        const arrowSize = 10; // Tamanho da ponta da seta
+        const angle = Math.atan2(endY - startY, endX - startX); // Ângulo da linha
+
+        // Calcular as coordenadas da ponta da seta (triângulo)
+        ctx.beginPath();
+        ctx.moveTo(endX, endY);
+        ctx.lineTo(
+            endX - arrowSize * Math.cos(angle - Math.PI / 6),
+            endY - arrowSize * Math.sin(angle - Math.PI / 6)
+        );
+        ctx.lineTo(
+            endX - arrowSize * Math.cos(angle + Math.PI / 6),
+            endY - arrowSize * Math.sin(angle + Math.PI / 6)
+        );
+        ctx.lineTo(endX, endY);
+        ctx.fillStyle = "rgba(255, 0, 0, 0.8)"; // Mesma cor da linha para a ponta da seta
+        ctx.fill();
+    }
 });
+
 
 dw.on("drawUnder", (ctx) => {
     if(!DRAWING.monsterVision) return false;
@@ -2786,4 +2907,140 @@ dw.on("drawOver", ctx => {
         ctx.arc(treeX, treeY, 5, 0, Math.PI * 2);
         ctx.fill();
     }
+});
+
+dw.on("hit", (data) => {
+    for (let hit of data) {
+      if (hit.rip && hit.target == dw.c.id) 
+      { 
+        const target = dw.e.find(e => e.id === hit.actor)
+        const died = JSON.parse(localStorage.getItem("died") || '{}')
+        const key = target.id === dw.c.id ? 'suicide' :`${target.md}-${target.lvl}+${target.r}`
+        died[key] = died[key] ? died[key] + 1 : 1
+        localStorage.setItem("died", JSON.stringify(died))
+      }
+      else if (hit.rip && hit.actor == dw.c.id) 
+      {
+        const target = dw.e.find(e => e.id === hit.target)
+        if(dw.mdInfo[target.md]?.isMonster) {
+            const killed = JSON.parse(localStorage.getItem("killed") || '{}')
+            const key = `${target.md}-${target.lvl}+${target.r}`
+            killed[key] = killed[key] ? killed[key] + 1 : 1
+            localStorage.setItem("killed", JSON.stringify(killed))
+        }
+      } 
+   }
+})
+
+// Function to draw statistics on the canvas
+function drawStatistics(ctx) {
+    const killed = JSON.parse(localStorage.getItem("killed") || '{}');
+    const died = JSON.parse(localStorage.getItem("died") || '{}');
+    const playerLevel = dw.c.lvl; // Assuming dw.c.lvl holds the player's level
+
+    const canvasHeight = ctx.canvas.height;
+    const canvasWidth = ctx.canvas.width;
+
+    // Define positions for each column with a 200px spacing
+    const xPositionKilled = 30; // First column for "killed"
+    const xPositionKilledPlus2 = xPositionKilled + 200; // Second column for "+2" killed
+    const xPositionDied = xPositionKilledPlus2 + 200; // Third column for "died"
+    const xPositionDiedPlus2 = xPositionDied + 200; // Fourth column for "+2" died
+
+    let yPosition = 70; // Start drawing from the top vertically
+
+    // Calculate the dimensions of the background rectangle
+    const rectWidth = xPositionDiedPlus2 + 300 - xPositionKilled; // Total width to cover all columns
+    const rectHeight = 500; // Adjust the height as needed
+
+    // Draw a semi-transparent black rectangle behind the columns
+    ctx.globalAlpha = 0.6; // Set the opacity to 80%
+    ctx.fillStyle = 'black';
+    ctx.fillRect(xPositionKilled - 20, yPosition - 20, rectWidth, rectHeight);
+    ctx.globalAlpha = 1.0; // Reset the opacity
+
+    ctx.font = "12px Arial"; // Set font for text
+    ctx.fillStyle = "white"; // Set color for kills/deaths (numbers)
+    ctx.textAlign = "left"; // Align text to the left for consistent display
+
+    // Helper function to sort the object by the rules
+    function sortStatistics(statistics) {
+        const entries = Object.entries(statistics);
+        // First, sort keys ending with '+2', then by value in descending order
+        return entries
+            .sort(([keyA, valA], [keyB, valB]) => {
+                const aEndsWith2 = keyA.endsWith('+2');
+                const bEndsWith2 = keyB.endsWith('+2');
+                if (aEndsWith2 && !bEndsWith2) return -1;
+                if (!aEndsWith2 && bEndsWith2) return 1;
+                return valB - valA; // Sort by value in descending order
+            });
+    }
+
+    // Function to draw monster statistics with color and opacity based on level and rarity
+    function drawMonster(ctx, monster, value, xPosition, yPos) {
+        const match = monster.match(/^(.+?)(\d+)(\+[\d])/); // Extract monster parts (name, level, rarity)
+        if (match) {
+            const [_, name, level, rarity] = match;
+            const monsterLevel = parseInt(level);
+            const rarityColor = rarity === '+0' ? '#90EE90' : '#DDA0DD'; // Set color based on rarity
+
+            // Set opacity if monster level is lower than player's level
+            if (monsterLevel < playerLevel) {
+                ctx.globalAlpha = 0.5;
+            } else {
+                ctx.globalAlpha = 1.0; // Reset opacity
+            }
+
+            // Draw the monster name and level in appropriate color
+            ctx.fillStyle = rarityColor;
+            ctx.fillText(`${name}${level} ${rarity}`, xPosition, yPos);
+
+            // Draw the value (kills/deaths) in white
+            ctx.fillStyle = "white";
+            ctx.fillText(`${value}`, xPosition + 150, yPos); // Draw the value to the right
+        }
+    }
+
+    // Function to draw statistics for a section
+    function drawSection(label, stats, xPosition, xPositionPlus2) {
+        let yPos = 75; // Reset yPosition for each section
+        let yPos2 = 75; // Reset yPosition for each section
+
+        ctx.fillText(label, xPosition, yPos);
+        yPos += 12;
+        yPos2 += 12;
+
+        // Display statistics, dividing into two columns for "+2" and regular keys
+        for (const [monster, value] of stats) {
+            if (monster.endsWith('+2') || monster.endsWith('+1')) {
+                drawMonster(ctx, monster, value, xPositionPlus2, yPos); // Keys ending with +2/+1 go to subcolumn
+                yPos += 12;
+            } else {
+                drawMonster(ctx, monster, value, xPosition, yPos2); // Regular keys stay in main column
+                yPos2 += 12;
+            }
+        }
+
+        // Reset opacity after drawing each section
+        ctx.globalAlpha = 1.0;
+    }
+
+    // Sort the killed and died statistics
+    const sortedKilled = sortStatistics(killed);
+    const sortedDied = sortStatistics(died);
+
+    // Display heading
+    ctx.fillText("Statistics", xPositionKilled, yPosition - 10);
+
+    // Display Killed statistics in the left sections
+    drawSection("Monsters Killed:", sortedKilled, xPositionKilled, xPositionKilledPlus2);
+
+    // Display Died statistics in the right sections
+    drawSection("Monsters Died From:", sortedDied, xPositionDied, xPositionDiedPlus2);
+}
+
+// Hooking into the canvas draw loop
+dw.on("drawOver", (ctx) => {
+    drawStatistics(ctx); // Draw statistics on the screen
 });
